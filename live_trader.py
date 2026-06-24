@@ -14,7 +14,7 @@ import os
 import time
 import urllib.request
 
-from delta_client import DeltaClient
+from delta_client import DeltaClient, _load_env
 from strategy_v4_ict import build_ict_indicators
 from strategy import atr_series
 
@@ -49,15 +49,9 @@ def save_state(state):
 
 def notify(msg):
     print(msg)
-    env_path = os.path.join(os.path.dirname(__file__), ".env")
-    token = chat_id = None
-    if os.path.exists(env_path):
-        with open(env_path) as f:
-            for line in f:
-                if line.startswith("TELEGRAM_BOT_TOKEN="):
-                    token = line.strip().split("=", 1)[1]
-                elif line.startswith("TELEGRAM_CHAT_ID="):
-                    chat_id = line.strip().split("=", 1)[1]
+    env = _load_env()
+    token = env.get("TELEGRAM_BOT_TOKEN")
+    chat_id = env.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
         return
     try:

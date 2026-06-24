@@ -11,6 +11,8 @@ ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
 
 
 def _load_env():
+    """Real environment variables (set in the cloud routine's Environment
+    config) take precedence; .env file is a fallback for local runs."""
     env = {}
     if os.path.exists(ENV_PATH):
         with open(ENV_PATH) as f:
@@ -20,6 +22,9 @@ def _load_env():
                     continue
                 k, v = line.split("=", 1)
                 env[k.strip()] = v.strip()
+    for key in ("DELTA_API_KEY", "DELTA_API_SECRET", "DELTA_BASE_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
+        if os.environ.get(key):
+            env[key] = os.environ[key]
     return env
 
 
