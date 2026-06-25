@@ -149,7 +149,6 @@ class DeltaClient:
         resp = self._request("POST", "/v2/orders", body=body)
         return resp["result"]
 
-    def cancel_all_stop_orders(self, product_id):
+    def cancel_all_orders(self, product_id):
         for o in self.get_open_orders(product_id):
-            if o.get("stop_order_type"):
-                self.cancel_order(product_id, o["id"])
+            self.cancel_order(product_id, o["id"])

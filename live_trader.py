@@ -179,6 +179,15 @@ def handle_symbol(client, state, symbol, equity, halted):
 
     stop_order = client.place_stop_order(product_id, side=stop_side, size=lots, stop_price=round(stop_price, 1))
 
+    # Real take-profit order placed immediately, same as the stop, so a brief
+    # spike to target gets filled even if price reverses before the next hourly check.
+    tp1_price = fill_price + TP1_R * stop_dist if side == "long" else fill_price - TP1_R * stop_dist
+    half_lots = max(1, lots // 2)
+    tp1_order = client.place_order(
+        product_id, side=stop_side, size=half_lots, order_type="limit_order",
+        limit_price=round(tp1_price, 1), reduce_only=True,
+    )
+
     state["positions"][symbol] = {
         "side": side,
         "product_id": product_id,
@@ -190,51 +199,49 @@ def handle_symbol(client, state, symbol, equity, halted):
         "entry_time": last_candle["time"],
         "tp1_done": False,
         "stop_order_id": stop_order["id"],
+        "tp1_order_id": tp1_order["id"],
         "bars_in_trade": 0,
     }
     notify(
-        f"ENTRY {symbol} {side.upper()} {lots} lots @ {fill_price} | stop {stop_price:.1f} "
+        f"ENTRY {symbol} {side.upper()} {lots} lots @ {fill_price} | stop {stop_price:.1f} | TP1 {tp1_price:.1f} "
         f"(risk ${equity_risked:.2f}, {LEVERAGE}x leverage)"
     )
 
 
 def manage_open_position(client, state, symbol, product_id, pos_state, candles, atr):
     live_pos = client.get_positions(product_id=product_id)
-    if not live_pos or int(live_pos.get("size", 0)) == 0:
+    live_size = abs(int(live_pos.get("size", 0))) if live_pos else 0
+    if live_size == 0:
         notify(f"{symbol}: position closed (stop/TP filled since last check). Clearing local state.")
         del state["positions"][symbol]
         return
 
     pos_state["bars_in_trade"] += 1
     last = candles[-1]
-    high, low, close = last["high"], last["low"], last["close"]
+    close = last["close"]
     side = pos_state["side"]
     entry = pos_state["entry_price"]
     risk = pos_state["initial_risk"]
-    lots = pos_state["lots"]
+    close_side = "sell" if side == "long" else "buy"
 
-    if not pos_state["tp1_done"]:
-        tp1_price = entry + TP1_R * risk if side == "long" else entry - TP1_R * risk
-        hit_tp1 = (high >= tp1_price) if side == "long" else (low <= tp1_price)
-        if hit_tp1:
-            half_lots = max(1, lots // 2)
-            close_side = "sell" if side == "long" else "buy"
-            client.place_order(product_id, side=close_side, size=half_lots, order_type="market_order", reduce_only=True)
-            pos_state["lots"] -= half_lots
-            pos_state["tp1_done"] = True
-            pos_state["stop_price"] = entry
-            client.cancel_all_stop_orders(product_id)
-            new_stop = client.place_stop_order(product_id, side=close_side, size=pos_state["lots"], stop_price=round(entry, 1))
-            pos_state["stop_order_id"] = new_stop["id"]
-            notify(f"{symbol}: TP1 hit, closed {half_lots} lots, stop moved to breakeven {entry:.1f}")
+    # The TP1 limit order lives on the exchange and fills in real time, so detect
+    # it by the position shrinking rather than re-deriving it from hourly candles
+    # (which could react too late if price already reversed past the entry/stop).
+    if not pos_state["tp1_done"] and live_size < pos_state["lots"]:
+        pos_state["lots"] = live_size
+        pos_state["tp1_done"] = True
+        pos_state["stop_price"] = entry
+        client.cancel_all_orders(product_id)
+        new_stop = client.place_stop_order(product_id, side=close_side, size=pos_state["lots"], stop_price=round(entry, 1))
+        pos_state["stop_order_id"] = new_stop["id"]
+        notify(f"{symbol}: TP1 filled, {pos_state['lots']} lots remaining, stop moved to breakeven {entry:.1f}")
 
     if pos_state["tp1_done"] and atr is not None:
         trail = close - TRAIL_ATR_MULT * atr if side == "long" else close + TRAIL_ATR_MULT * atr
         improved = (trail > pos_state["stop_price"]) if side == "long" else (trail < pos_state["stop_price"])
         if improved:
             pos_state["stop_price"] = trail
-            close_side = "sell" if side == "long" else "buy"
-            client.cancel_all_stop_orders(product_id)
+            client.cancel_all_orders(product_id)
             new_stop = client.place_stop_order(product_id, side=close_side, size=pos_state["lots"], stop_price=round(trail, 1))
             pos_state["stop_order_id"] = new_stop["id"]
             notify(f"{symbol}: trailing stop moved to {trail:.1f}")
@@ -242,8 +249,7 @@ def manage_open_position(client, state, symbol, product_id, pos_state, candles, 
     if pos_state["bars_in_trade"] >= TIME_STOP_CANDLES:
         cur_r = ((close - entry) if side == "long" else (entry - close)) / risk
         if abs(cur_r) < TIME_STOP_R:
-            close_side = "sell" if side == "long" else "buy"
-            client.cancel_all_stop_orders(product_id)
+            client.cancel_all_orders(product_id)
             client.place_order(product_id, side=close_side, size=pos_state["lots"], order_type="market_order", reduce_only=True)
             notify(f"{symbol}: time stop hit ({pos_state['bars_in_trade']} bars, {cur_r:.2f}R), closed flat trade")
             del state["positions"][symbol]
