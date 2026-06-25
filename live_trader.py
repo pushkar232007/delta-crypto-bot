@@ -19,7 +19,7 @@ from strategy_v4_ict import build_ict_indicators
 from strategy import atr_series
 
 STATE_PATH = os.path.join(os.path.dirname(__file__), "state.json")
-SYMBOLS = ["BTCUSD", "ETHUSD"]
+SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD"]
 RESOLUTION = "1h"
 CANDLE_HISTORY = 400  # enough for EMA200 warmup + swing lookback
 
