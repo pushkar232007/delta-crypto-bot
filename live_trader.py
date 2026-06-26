@@ -23,13 +23,14 @@ SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD"]
 RESOLUTION = "1h"
 CANDLE_HISTORY = 400  # enough for EMA200 warmup + swing lookback
 
-RISK_PER_TRADE = 0.01
+RISK_PER_TRADE = 0.05
 LEVERAGE = 7
 TP1_R = 1.5
 TRAIL_ATR_MULT = 2.0
 TIME_STOP_CANDLES = 16
 TIME_STOP_R = 0.3
-DAILY_LOSS_LIMIT = 0.03
+DAILY_LOSS_LIMIT = 0.10
+MAX_MARGIN_FRACTION = 0.5
 STOP_BUFFER_ATR = 0.2
 REQUIRE_FVG = False
 SWING_K = 3
@@ -168,6 +169,11 @@ def handle_symbol(client, state, symbol, equity, halted):
     liq_dist = entry_price / LEVERAGE
     if liq_dist <= stop_dist:
         notify(f"{symbol}: stop distance wider than liquidation distance at {LEVERAGE}x, skipping")
+        return
+
+    margin_required = (lots * contract_value * entry_price) / LEVERAGE
+    if margin_required > equity * MAX_MARGIN_FRACTION:
+        notify(f"{symbol}: signal fired but required margin (${margin_required:.2f}) exceeds {MAX_MARGIN_FRACTION*100:.0f}% of equity, skipping")
         return
 
     order_side = "buy" if side == "long" else "sell"
