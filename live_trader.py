@@ -57,7 +57,7 @@ def notify(msg):
         return
     try:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
-        data = json.dumps({"chat_id": chat_id, "text": msg}).encode()
+        data = json.dumps({"chat_id": chat_id, "text": f"[Delta Bot] {msg}"}).encode()
         req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
         urllib.request.urlopen(req, timeout=10)
     except Exception as e:
