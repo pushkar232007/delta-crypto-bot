@@ -29,8 +29,6 @@ TP1_R = 1.5
 TRAIL_ATR_MULT = 2.0
 TIME_STOP_CANDLES = 16
 TIME_STOP_R = 0.3
-DAILY_LOSS_LIMIT = 0.10
-MAX_MARGIN_FRACTION = 0.5
 STOP_BUFFER_ATR = 0.2
 REQUIRE_FVG = False
 SWING_K = 3
@@ -40,7 +38,7 @@ def load_state():
     if os.path.exists(STATE_PATH):
         with open(STATE_PATH) as f:
             return json.load(f)
-    return {"positions": {}, "day_anchor": None, "day_start_equity": None, "halted_until": 0}
+    return {"positions": {}}
 
 
 def save_state(state):
@@ -82,32 +80,16 @@ def run_once():
     balances = client.get_balances()
     usd_balance = next((float(b["available_balance"]) for b in balances if b.get("asset_symbol") == "USD"), 0.0)
 
-    today = int(time.time()) - (int(time.time()) % 86400)
-    if state["day_anchor"] != today:
-        state["day_anchor"] = today
-        state["day_start_equity"] = usd_balance
-        if state["halted_until"] and time.time() > state["halted_until"]:
-            state["halted_until"] = 0
-
-    daily_dd = 0
-    if state["day_start_equity"]:
-        daily_dd = (state["day_start_equity"] - usd_balance) / state["day_start_equity"]
-    if daily_dd >= DAILY_LOSS_LIMIT and not state["halted_until"]:
-        state["halted_until"] = today + 86400
-        notify(f"DAILY LOSS LIMIT HIT ({daily_dd*100:.1f}%). Halting new entries for 24h.")
-
-    halted = time.time() < state["halted_until"]
-
     for symbol in SYMBOLS:
         try:
-            handle_symbol(client, state, symbol, usd_balance, halted)
+            handle_symbol(client, state, symbol, usd_balance)
         except Exception as e:
             notify(f"ERROR handling {symbol}: {e}")
 
     save_state(state)
 
 
-def handle_symbol(client, state, symbol, equity, halted):
+def handle_symbol(client, state, symbol, equity):
     product_id = client.get_product_id(symbol)
     pos_state = state["positions"].get(symbol)
 
@@ -124,7 +106,7 @@ def handle_symbol(client, state, symbol, equity, halted):
         manage_open_position(client, state, symbol, product_id, pos_state, candles, atr)
         return
 
-    if halted or atr is None:
+    if atr is None:
         return
 
     trend = ind.trend_at(i)
@@ -169,11 +151,6 @@ def handle_symbol(client, state, symbol, equity, halted):
     liq_dist = entry_price / LEVERAGE
     if liq_dist <= stop_dist:
         notify(f"{symbol}: stop distance wider than liquidation distance at {LEVERAGE}x, skipping")
-        return
-
-    margin_required = (lots * contract_value * entry_price) / LEVERAGE
-    if margin_required > equity * MAX_MARGIN_FRACTION:
-        notify(f"{symbol}: signal fired but required margin (${margin_required:.2f}) exceeds {MAX_MARGIN_FRACTION*100:.0f}% of equity, skipping")
         return
 
     order_side = "buy" if side == "long" else "sell"
