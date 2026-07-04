@@ -1,13 +1,12 @@
-"""Hourly-cadence live (testnet) execution of the validated ICT strategy
+"""Live execution of the validated ICT strategy
 (market structure + EMA stack + Fibonacci retracement, optional FVG confluence).
 
-Designed to be invoked once per 1h candle close by a scheduled routine.
-State (open positions, daily-loss tracking) persists in state.json since
-this process does not run continuously between invocations.
+Designed to be invoked every 5 minutes by cron.
+- Position management (TP1 detection, stop adjustment) runs every 5 minutes.
+- New entry signals are only evaluated in the first 5 minutes of each hour,
+  immediately after a fresh 1h candle has closed — preventing duplicate entries.
 
-Safety: every entry places a real exchange-side stop-loss order immediately,
-so a position is never unprotected between runs even if the bot doesn't
-check in for a while.
+State (open positions) persists in state.json between invocations.
 """
 import json
 import os
@@ -80,16 +79,21 @@ def run_once():
     balances = client.get_balances()
     usd_balance = next((float(b["available_balance"]) for b in balances if b.get("asset_symbol") == "USD"), 0.0)
 
+    # Only look for new entries in the first 5 minutes of each hour (fresh candle just closed).
+    # Position management always runs regardless of timing.
+    minutes_into_hour = (int(time.time()) % 3600) // 60
+    allow_entry = minutes_into_hour < 5
+
     for symbol in SYMBOLS:
         try:
-            handle_symbol(client, state, symbol, usd_balance)
+            handle_symbol(client, state, symbol, usd_balance, allow_entry)
         except Exception as e:
             notify(f"ERROR handling {symbol}: {e}")
 
     save_state(state)
 
 
-def handle_symbol(client, state, symbol, equity):
+def handle_symbol(client, state, symbol, equity, allow_entry=True):
     product_id = client.get_product_id(symbol)
     pos_state = state["positions"].get(symbol)
 
@@ -106,7 +110,7 @@ def handle_symbol(client, state, symbol, equity):
         manage_open_position(client, state, symbol, product_id, pos_state, candles, atr)
         return
 
-    if atr is None:
+    if not allow_entry or atr is None:
         return
 
     trend = ind.trend_at(i)
