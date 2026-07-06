@@ -187,7 +187,6 @@ def handle_symbol(client, state, symbol, equity, allow_entry=True):
         "tp1_done": False,
         "stop_order_id": stop_order["id"],
         "tp1_order_id": tp1_order["id"],
-        "bars_in_trade": 0,
     }
     notify(
         f"ENTRY {symbol} {side.upper()} {lots} lots @ {fill_price} | stop {stop_price:.1f} | TP1 {tp1_price:.1f} "
@@ -203,7 +202,8 @@ def manage_open_position(client, state, symbol, product_id, pos_state, candles, 
         del state["positions"][symbol]
         return
 
-    pos_state["bars_in_trade"] += 1
+    # Compute bars elapsed from actual entry timestamp so cron frequency doesn't affect the count.
+    bars_in_trade = int((int(time.time()) - pos_state["entry_time"]) / 3600)
     last = candles[-1]
     close = last["close"]
     side = pos_state["side"]
@@ -233,12 +233,12 @@ def manage_open_position(client, state, symbol, product_id, pos_state, candles, 
             pos_state["stop_order_id"] = new_stop["id"]
             notify(f"{symbol}: trailing stop moved to {trail:.1f}")
 
-    if pos_state["bars_in_trade"] >= TIME_STOP_CANDLES:
+    if bars_in_trade >= TIME_STOP_CANDLES:
         cur_r = ((close - entry) if side == "long" else (entry - close)) / risk
         if abs(cur_r) < TIME_STOP_R:
             client.cancel_all_orders(product_id)
             client.place_order(product_id, side=close_side, size=pos_state["lots"], order_type="market_order", reduce_only=True)
-            notify(f"{symbol}: time stop hit ({pos_state['bars_in_trade']} bars, {cur_r:.2f}R), closed flat trade")
+            notify(f"{symbol}: time stop hit ({bars_in_trade} bars, {cur_r:.2f}R), closed flat trade")
             del state["positions"][symbol]
             return
 
