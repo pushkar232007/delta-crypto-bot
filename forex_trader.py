@@ -1,10 +1,15 @@
-"""Paper trading bot: BB Mean Reversion on GBPUSD and AUDUSD.
+"""Paper trading bot: BB Mean Reversion on validated forex pairs.
 
 Runs every hour via cron. Fetches Yahoo Finance 1h data, applies
 BB(20,2) + RSI(14) + EMA200 strategy. No broker account needed —
 positions are tracked in forex_state.json and all events sent to Telegram.
 
-Validated pairs: GBPUSD (PF 1.42, +23.8% over 17mo) and AUDUSD (PF 1.48, +28.3%).
+Validated pairs (PF > 1.2 in both split-sample halves over 17 months):
+  GBPUSD  PF 1.35/1.38  +23%    AUDUSD  PF 1.79/1.33  +28%
+  USDCAD  PF 1.77/1.26  +19%    USDINR  PF 1.36/1.52  +18%
+  USDNOK  PF 1.50/1.25  +16%    EURCAD  PF 1.19/1.58  +17%
+  USDZAR  PF 1.38/1.18  +11%    USDTRY  PF 3.38/4.33  +50%
+
 Long signal:  close < lower BB  AND RSI < 35 AND close > EMA200
 Short signal: close > upper BB  AND RSI > 65 AND close < EMA200
 Exit:         close crosses BB midline (mean reversion target), stop (2xATR), or 24h time stop.
@@ -28,7 +33,12 @@ TIME_STOP_CANDLES = 24        # close after 24 bars (~24h) if no momentum
 TIME_STOP_R       = 0.3       # only if flat (|pnl| < 0.3R)
 CANDLE_FETCH_DAYS = 60        # fetch 60 days of 1h data (~1440 bars)
 
-PAIRS      = ["GBPUSD=X", "AUDUSD=X"]
+PAIRS      = [
+    "GBPUSD=X", "AUDUSD=X",   # original validated pairs
+    "USDCAD=X", "USDINR=X",   # strong majors
+    "USDNOK=X", "EURCAD=X",   # strong crosses
+    "USDZAR=X", "USDTRY=X",   # emerging markets
+]
 STATE_PATH = os.path.join(os.path.dirname(__file__), "forex_state.json")
 ENV_PATH   = os.path.join(os.path.dirname(__file__), ".env")
 
