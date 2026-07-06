@@ -14,8 +14,8 @@ import os
 import time
 import urllib.request
 
-STARTING_EQUITY   = 1000.0
-RISK_PER_TRADE    = 0.01      # 1% equity risked per trade
+STARTING_EQUITY   = 50000.0   # INR
+RISK_PER_TRADE    = 0.05      # 5% equity risked per trade
 ATR_STOP_MULT     = 2.0
 BB_PERIOD         = 20
 BB_STD            = 2.0
