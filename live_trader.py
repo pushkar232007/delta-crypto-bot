@@ -157,6 +157,12 @@ def handle_ema_symbol(client, state, symbol, equity, allow_entry):
         notify(f"{symbol} EMA: SL wider than liquidation distance at {LEVERAGE}x, skipping")
         return
 
+    # Cap lots so required margin never exceeds 90% of available equity
+    required_margin = (lots * contract_value) / LEVERAGE
+    if required_margin > equity * 0.9:
+        lots = max(1, int(equity * 0.9 * LEVERAGE / contract_value))
+        notify(f"{symbol} EMA: lots capped to {lots} (margin limit)")
+
     order_side = "buy"  if signal == "long"  else "sell"
     close_side = "sell" if signal == "long"  else "buy"
 
@@ -277,6 +283,11 @@ def handle_ict_symbol(client, state, symbol, equity, allow_entry):
     if liq_dist <= stop_dist:
         notify(f"{symbol}: stop distance wider than liquidation distance at {LEVERAGE}x, skipping")
         return
+
+    required_margin = (lots * contract_value) / LEVERAGE
+    if required_margin > equity * 0.9:
+        lots = max(1, int(equity * 0.9 * LEVERAGE / contract_value))
+        notify(f"{symbol} ICT: lots capped to {lots} (margin limit)")
 
     order_side = "buy"  if side == "long"  else "sell"
     stop_side  = "sell" if side == "long"  else "buy"
