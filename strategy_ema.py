@@ -4,14 +4,36 @@ Entry: EMA_fast crosses EMA_slow on the last closed 1h candle.
 Exit:  Fixed TP and SL placed as exchange orders at entry (no trailing).
 
 Validated on current regime (Jul 2025 – Jul 2026), split-sample H1/H2 both PF > 1.2.
+No external dependencies — pure Python only.
 """
-import pandas as pd
 
 EMA_PARAMS = {
     "SOLUSD":  {"fast": 9,  "slow": 21, "tp_mult": 2.0, "sl_mult": 1.0},
     "XRPUSD":  {"fast": 5,  "slow": 20, "tp_mult": 2.0, "sl_mult": 1.0},
     "DOGEUSD": {"fast": 11, "slow": 25, "tp_mult": 3.5, "sl_mult": 1.0},
 }
+
+
+def _ema(values, span):
+    k = 2.0 / (span + 1)
+    result = [values[0]]
+    for v in values[1:]:
+        result.append(v * k + result[-1] * (1.0 - k))
+    return result
+
+
+def _atr14(highs, lows, closes):
+    tr = [
+        max(highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i]  - closes[i - 1]))
+        for i in range(1, len(closes))
+    ]
+    # Simple rolling mean of last 14 TR values at index -2 (last closed candle)
+    window = tr[-15:-1]  # 14 values ending at last-closed-candle position
+    if len(window) < 14:
+        return None
+    return sum(window) / 14.0
 
 
 def build_ema_signal(candles, symbol):
@@ -36,21 +58,10 @@ def build_ema_signal(candles, symbol):
     highs  = [float(c["high"])  for c in candles]
     lows   = [float(c["low"])   for c in candles]
 
-    closes_s = pd.Series(closes)
-    ef = closes_s.ewm(span=fast_n, adjust=False).mean().values
-    es = closes_s.ewm(span=slow_n, adjust=False).mean().values
+    ef = _ema(closes, fast_n)
+    es = _ema(closes, slow_n)
 
-    # ATR(14) — use value at the last closed candle (index -2 of tr series)
-    tr = [
-        max(highs[i] - lows[i],
-            abs(highs[i] - closes[i - 1]),
-            abs(lows[i]  - closes[i - 1]))
-        for i in range(1, len(closes))
-    ]
-    atr_series = pd.Series(tr).rolling(14).mean()
-    # tr has len(closes)-1 elements; index -2 in tr corresponds to last closed candle
-    atr = float(atr_series.iloc[-2]) if not pd.isna(atr_series.iloc[-2]) else None
-
+    atr = _atr14(highs, lows, closes)
     if atr is None or atr <= 0:
         return None
 
