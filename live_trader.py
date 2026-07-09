@@ -1,12 +1,15 @@
-"""Live execution of the validated ICT strategy
-(market structure + EMA stack + Fibonacci retracement, optional FVG confluence).
+"""Live trading bot — Delta Exchange testnet.
 
-Designed to be invoked every 5 minutes by cron.
-- Position management (TP1 detection, stop adjustment) runs every 5 minutes.
-- New entry signals are only evaluated in the first 5 minutes of each hour,
-  immediately after a fresh 1h candle has closed — preventing duplicate entries.
+Cron: every 5 minutes.
+- Position management runs every 5 minutes.
+- New entry signals only evaluated in the first 5 minutes of each hour
+  (fresh 1h candle just closed), preventing duplicate entries.
 
-State (open positions) persists in state.json between invocations.
+Strategy routing:
+  BTCUSD, ETHUSD  → ICT (market structure + EMA stack + Fibonacci)
+  SOLUSD, XRPUSD, DOGEUSD → EMA crossover with fixed TP/SL
+
+State persists in state.json between invocations.
 """
 import json
 import os
@@ -16,14 +19,21 @@ import urllib.request
 from delta_client import DeltaClient, _load_env
 from strategy_v4_ict import build_ict_indicators
 from strategy import atr_series
+from strategy_ema import build_ema_signal, EMA_PARAMS
 
 STATE_PATH = os.path.join(os.path.dirname(__file__), "state.json")
-SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD"]
+
+ICT_SYMBOLS = ["BTCUSD", "ETHUSD"]
+EMA_SYMBOLS = ["SOLUSD", "XRPUSD", "DOGEUSD"]
+SYMBOLS = ICT_SYMBOLS + EMA_SYMBOLS
+
 RESOLUTION = "1h"
-CANDLE_HISTORY = 400  # enough for EMA200 warmup + swing lookback
+CANDLE_HISTORY = 400
 
 RISK_PER_TRADE = 0.05
 LEVERAGE = 7
+
+# ICT-only params
 TP1_R = 1.5
 TRAIL_ATR_MULT = 2.0
 TIME_STOP_CANDLES = 16
@@ -65,11 +75,13 @@ def fetch_recent_candles(symbol, resolution, count):
     seconds = {"15m": 900, "1h": 3600, "4h": 14400}[resolution]
     end = int(time.time())
     start = end - count * seconds
-    url = f"https://cdn-ind.testnet.deltaex.org/v2/history/candles?symbol={symbol}&resolution={resolution}&start={start}&end={end}"
+    url = (
+        f"https://cdn-ind.testnet.deltaex.org/v2/history/candles"
+        f"?symbol={symbol}&resolution={resolution}&start={start}&end={end}"
+    )
     with urllib.request.urlopen(url, timeout=20) as resp:
         body = json.loads(resp.read())
-    candles = sorted(body["result"], key=lambda c: c["time"])
-    return candles
+    return sorted(body["result"], key=lambda c: c["time"])
 
 
 def run_once():
@@ -77,23 +89,132 @@ def run_once():
     state = load_state()
 
     balances = client.get_balances()
-    usd_balance = next((float(b["available_balance"]) for b in balances if b.get("asset_symbol") == "USD"), 0.0)
+    usd_balance = next(
+        (float(b["available_balance"]) for b in balances if b.get("asset_symbol") == "USD"),
+        0.0,
+    )
 
-    # Only look for new entries in the first 5 minutes of each hour (fresh candle just closed).
-    # Position management always runs regardless of timing.
     minutes_into_hour = (int(time.time()) % 3600) // 60
     allow_entry = minutes_into_hour < 5
 
     for symbol in SYMBOLS:
         try:
-            handle_symbol(client, state, symbol, usd_balance, allow_entry)
+            if symbol in EMA_SYMBOLS:
+                handle_ema_symbol(client, state, symbol, usd_balance, allow_entry)
+            else:
+                handle_ict_symbol(client, state, symbol, usd_balance, allow_entry)
         except Exception as e:
             notify(f"ERROR handling {symbol}: {e}")
 
     save_state(state)
 
 
-def handle_symbol(client, state, symbol, equity, allow_entry=True):
+# ── EMA strategy ──────────────────────────────────────────────────────────────
+
+def handle_ema_symbol(client, state, symbol, equity, allow_entry):
+    product_id = client.get_product_id(symbol)
+    pos_state = state["positions"].get(symbol)
+
+    candles = fetch_recent_candles(symbol, RESOLUTION, CANDLE_HISTORY)
+    if len(candles) < 50:
+        notify(f"{symbol}: not enough candles ({len(candles)}), skipping")
+        return
+
+    if pos_state:
+        manage_ema_position(client, state, symbol, product_id, pos_state)
+        return
+
+    if not allow_entry:
+        return
+
+    result = build_ema_signal(candles, symbol)
+    if result is None:
+        return
+
+    signal = result["signal"]   # "long" or "short"
+    atr    = result["atr"]
+
+    params = EMA_PARAMS[symbol]
+    tp_mult = params["tp_mult"]
+    sl_mult = params["sl_mult"]
+
+    entry_price = float(candles[-2]["close"])  # last closed candle
+    sl_dist = sl_mult * atr
+    if sl_dist <= 0:
+        return
+
+    product = client.get_product(symbol)
+    contract_value = float(product["contract_value"])
+
+    equity_risked = equity * RISK_PER_TRADE
+    lots = round((equity_risked / sl_dist) / contract_value)
+    if lots < 1:
+        notify(f"{symbol} EMA: signal {signal} but lots rounds to 0, skipping")
+        return
+
+    liq_dist = entry_price / LEVERAGE
+    if liq_dist <= sl_dist:
+        notify(f"{symbol} EMA: SL wider than liquidation distance at {LEVERAGE}x, skipping")
+        return
+
+    order_side = "buy"  if signal == "long"  else "sell"
+    close_side = "sell" if signal == "long"  else "buy"
+
+    client.set_leverage(product_id, LEVERAGE)
+    entry_order = client.place_order(product_id, side=order_side, size=lots, order_type="market_order")
+    fill_price = float(entry_order.get("average_fill_price") or entry_price)
+
+    if signal == "long":
+        tp_price = fill_price + tp_mult * atr
+        sl_price = fill_price - sl_mult * atr
+    else:
+        tp_price = fill_price - tp_mult * atr
+        sl_price = fill_price + sl_mult * atr
+
+    sl_order = client.place_stop_order(
+        product_id, side=close_side, size=lots, stop_price=round(sl_price, 5)
+    )
+    tp_order = client.place_order(
+        product_id, side=close_side, size=lots,
+        order_type="limit_order", limit_price=round(tp_price, 5), reduce_only=True,
+    )
+
+    state["positions"][symbol] = {
+        "strategy": "ema",
+        "side": signal,
+        "product_id": product_id,
+        "entry_price": fill_price,
+        "tp_price": tp_price,
+        "sl_price": sl_price,
+        "lots": lots,
+        "contract_value": contract_value,
+        "entry_time": candles[-2]["time"],
+        "sl_order_id": sl_order["id"],
+        "tp_order_id": tp_order["id"],
+    }
+    notify(
+        f"ENTRY EMA {symbol} {signal.upper()} {lots} lots @ {fill_price:.5g} | "
+        f"TP {tp_price:.5g} ({tp_mult}×ATR) | SL {sl_price:.5g} (1×ATR) | "
+        f"risk ${equity_risked:.2f}"
+    )
+
+
+def manage_ema_position(client, state, symbol, product_id, pos_state):
+    live_pos = client.get_positions(product_id=product_id)
+    live_size = abs(int(live_pos.get("size", 0))) if live_pos else 0
+    if live_size == 0:
+        client.cancel_all_orders(product_id)
+        notify(
+            f"{symbol} EMA: position closed (TP/SL filled). "
+            f"Entry={pos_state['entry_price']:.5g} "
+            f"TP={pos_state['tp_price']:.5g} SL={pos_state['sl_price']:.5g}"
+        )
+        del state["positions"][symbol]
+
+
+# ── ICT strategy (unchanged) ──────────────────────────────────────────────────
+
+def handle_ict_symbol(client, state, symbol, equity, allow_entry):
     product_id = client.get_product_id(symbol)
     pos_state = state["positions"].get(symbol)
 
@@ -107,7 +228,7 @@ def handle_symbol(client, state, symbol, equity, allow_entry=True):
     last_candle = candles[i]
 
     if pos_state:
-        manage_open_position(client, state, symbol, product_id, pos_state, candles, atr)
+        manage_ict_position(client, state, symbol, product_id, pos_state, candles, atr)
         return
 
     if not allow_entry or atr is None:
@@ -130,7 +251,7 @@ def handle_symbol(client, state, symbol, equity, allow_entry=True):
 
     bullish = close > open_
     bearish = close < open_
-    long_signal = trend == "up" and bullish
+    long_signal  = trend == "up"   and bullish
     short_signal = trend == "down" and bearish
     if not (long_signal or short_signal):
         return
@@ -146,7 +267,7 @@ def handle_symbol(client, state, symbol, equity, allow_entry=True):
     product = client.get_product(symbol)
     contract_value = float(product["contract_value"])
     equity_risked = equity * RISK_PER_TRADE
-    qty = equity_risked / stop_dist  # in underlying units (e.g. BTC)
+    qty = equity_risked / stop_dist
     lots = round(qty / contract_value)
     if lots < 1:
         notify(f"{symbol}: signal fired but position size rounds to 0 lots, skipping")
@@ -157,25 +278,25 @@ def handle_symbol(client, state, symbol, equity, allow_entry=True):
         notify(f"{symbol}: stop distance wider than liquidation distance at {LEVERAGE}x, skipping")
         return
 
-    order_side = "buy" if side == "long" else "sell"
-    stop_side = "sell" if side == "long" else "buy"
+    order_side = "buy"  if side == "long"  else "sell"
+    stop_side  = "sell" if side == "long"  else "buy"
 
     client.set_leverage(product_id, LEVERAGE)
     entry_order = client.place_order(product_id, side=order_side, size=lots, order_type="market_order")
     fill_price = float(entry_order.get("average_fill_price") or entry_price)
 
-    stop_order = client.place_stop_order(product_id, side=stop_side, size=lots, stop_price=round(stop_price, 1))
-
-    # Real take-profit order placed immediately, same as the stop, so a brief
-    # spike to target gets filled even if price reverses before the next hourly check.
+    stop_order = client.place_stop_order(
+        product_id, side=stop_side, size=lots, stop_price=round(stop_price, 1)
+    )
     tp1_price = fill_price + TP1_R * stop_dist if side == "long" else fill_price - TP1_R * stop_dist
     half_lots = max(1, lots // 2)
     tp1_order = client.place_order(
-        product_id, side=stop_side, size=half_lots, order_type="limit_order",
-        limit_price=round(tp1_price, 1), reduce_only=True,
+        product_id, side=stop_side, size=half_lots,
+        order_type="limit_order", limit_price=round(tp1_price, 1), reduce_only=True,
     )
 
     state["positions"][symbol] = {
+        "strategy": "ict",
         "side": side,
         "product_id": product_id,
         "entry_price": fill_price,
@@ -189,12 +310,13 @@ def handle_symbol(client, state, symbol, equity, allow_entry=True):
         "tp1_order_id": tp1_order["id"],
     }
     notify(
-        f"ENTRY {symbol} {side.upper()} {lots} lots @ {fill_price} | stop {stop_price:.1f} | TP1 {tp1_price:.1f} "
+        f"ENTRY ICT {symbol} {side.upper()} {lots} lots @ {fill_price} | "
+        f"stop {stop_price:.1f} | TP1 {tp1_price:.1f} "
         f"(risk ${equity_risked:.2f}, {LEVERAGE}x leverage)"
     )
 
 
-def manage_open_position(client, state, symbol, product_id, pos_state, candles, atr):
+def manage_ict_position(client, state, symbol, product_id, pos_state, candles, atr):
     live_pos = client.get_positions(product_id=product_id)
     live_size = abs(int(live_pos.get("size", 0))) if live_pos else 0
     if live_size == 0:
@@ -202,26 +324,24 @@ def manage_open_position(client, state, symbol, product_id, pos_state, candles, 
         del state["positions"][symbol]
         return
 
-    # Compute bars elapsed from actual entry timestamp so cron frequency doesn't affect the count.
     bars_in_trade = int((int(time.time()) - pos_state["entry_time"]) / 3600)
-    last = candles[-1]
+    last  = candles[-1]
     close = last["close"]
-    side = pos_state["side"]
+    side  = pos_state["side"]
     entry = pos_state["entry_price"]
-    risk = pos_state["initial_risk"]
+    risk  = pos_state["initial_risk"]
     close_side = "sell" if side == "long" else "buy"
 
-    # The TP1 limit order lives on the exchange and fills in real time, so detect
-    # it by the position shrinking rather than re-deriving it from hourly candles
-    # (which could react too late if price already reversed past the entry/stop).
     if not pos_state["tp1_done"] and live_size < pos_state["lots"]:
-        pos_state["lots"] = live_size
-        pos_state["tp1_done"] = True
+        pos_state["lots"]       = live_size
+        pos_state["tp1_done"]   = True
         pos_state["stop_price"] = entry
         client.cancel_all_orders(product_id)
-        new_stop = client.place_stop_order(product_id, side=close_side, size=pos_state["lots"], stop_price=round(entry, 1))
+        new_stop = client.place_stop_order(
+            product_id, side=close_side, size=pos_state["lots"], stop_price=round(entry, 1)
+        )
         pos_state["stop_order_id"] = new_stop["id"]
-        notify(f"{symbol}: TP1 filled, {pos_state['lots']} lots remaining, stop moved to breakeven {entry:.1f}")
+        notify(f"{symbol}: TP1 filled, {pos_state['lots']} lots remaining, stop → breakeven {entry:.1f}")
 
     if pos_state["tp1_done"] and atr is not None:
         trail = close - TRAIL_ATR_MULT * atr if side == "long" else close + TRAIL_ATR_MULT * atr
@@ -229,16 +349,21 @@ def manage_open_position(client, state, symbol, product_id, pos_state, candles, 
         if improved:
             pos_state["stop_price"] = trail
             client.cancel_all_orders(product_id)
-            new_stop = client.place_stop_order(product_id, side=close_side, size=pos_state["lots"], stop_price=round(trail, 1))
+            new_stop = client.place_stop_order(
+                product_id, side=close_side, size=pos_state["lots"], stop_price=round(trail, 1)
+            )
             pos_state["stop_order_id"] = new_stop["id"]
-            notify(f"{symbol}: trailing stop moved to {trail:.1f}")
+            notify(f"{symbol}: trailing stop → {trail:.1f}")
 
     if bars_in_trade >= TIME_STOP_CANDLES:
         cur_r = ((close - entry) if side == "long" else (entry - close)) / risk
         if abs(cur_r) < TIME_STOP_R:
             client.cancel_all_orders(product_id)
-            client.place_order(product_id, side=close_side, size=pos_state["lots"], order_type="market_order", reduce_only=True)
-            notify(f"{symbol}: time stop hit ({bars_in_trade} bars, {cur_r:.2f}R), closed flat trade")
+            client.place_order(
+                product_id, side=close_side, size=pos_state["lots"],
+                order_type="market_order", reduce_only=True,
+            )
+            notify(f"{symbol}: time stop hit ({bars_in_trade} bars, {cur_r:.2f}R), closed flat")
             del state["positions"][symbol]
             return
 
