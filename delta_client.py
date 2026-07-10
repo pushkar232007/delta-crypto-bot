@@ -126,8 +126,13 @@ class DeltaClient:
         return resp["result"]
 
     def cancel_order(self, product_id, order_id):
-        resp = self._request("DELETE", "/v2/orders", body={"product_id": product_id, "id": order_id})
-        return resp["result"]
+        try:
+            resp = self._request("DELETE", "/v2/orders", body={"product_id": product_id, "id": order_id})
+            return resp["result"]
+        except RuntimeError as e:
+            if "open_order_not_found" in str(e):
+                return None  # already filled/cancelled — that's fine
+            raise
 
     def get_open_orders(self, product_id=None):
         params = {"product_id": product_id, "state": "open"} if product_id else {"state": "open"}
