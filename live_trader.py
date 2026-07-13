@@ -109,6 +109,10 @@ def run_once():
 
 def handle_symbol(client, state, symbol, equity, allow_entry):
     product_id = client.get_product_id(symbol)
+    if product_id is None:
+        print(f"{symbol}: not listed on testnet, skipping")
+        return
+
     pos_state  = state["positions"].get(symbol)
 
     candles = fetch_recent_candles(symbol, RESOLUTION, CANDLE_HISTORY)
