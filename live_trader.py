@@ -64,8 +64,9 @@ def fetch_recent_candles(symbol, resolution, count):
     seconds = {"15m": 900, "1h": 3600, "4h": 14400}[resolution]
     end   = int(time.time())
     start = end - count * seconds
+    # Use live public API for candle history — testnet only covers major symbols
     url = (
-        f"https://cdn-ind.testnet.deltaex.org/v2/history/candles"
+        f"https://api.india.delta.exchange/v2/history/candles"
         f"?symbol={symbol}&resolution={resolution}&start={start}&end={end}"
     )
     with urllib.request.urlopen(url, timeout=20) as resp:
