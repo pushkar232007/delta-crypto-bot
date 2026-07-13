@@ -12,6 +12,11 @@ Strategy routing:
   ADAUSD, AAVEUSD,
   TRXUSD              → EMA(9/20) pullback
 
+Execution:
+  TESTNET_SYMBOLS  → orders placed on Delta testnet
+  SIM_SYMBOLS      → simulated locally (not on testnet); same signals,
+                     same Telegram notifications, P&L tracked in state.json
+
 State persists in state.json between invocations.
 """
 import json
@@ -23,6 +28,9 @@ from delta_client import DeltaClient, _load_env
 from strategy_pullback import build_pullback_signal, build_btc_rsi_signal, TP_MULT
 
 STATE_PATH = os.path.join(os.path.dirname(__file__), "state.json")
+
+# Symbols not available on testnet — simulated locally using live candle prices
+SIM_SYMBOLS = ["AAVEUSD", "TRXUSD"]
 
 SYMBOLS = ["BTCUSD", "ETHUSD", "XRPUSD", "DOGEUSD", "ADAUSD", "AAVEUSD", "TRXUSD"]
 
@@ -64,7 +72,6 @@ def fetch_recent_candles(symbol, resolution, count):
     seconds = {"15m": 900, "1h": 3600, "4h": 14400}[resolution]
     end   = int(time.time())
     start = end - count * seconds
-    # Use live public API for candle history — testnet only covers major symbols
     url = (
         f"https://api.india.delta.exchange/v2/history/candles"
         f"?symbol={symbol}&resolution={resolution}&start={start}&end={end}"
@@ -100,20 +107,103 @@ def run_once():
 
     for symbol in SYMBOLS:
         try:
-            handle_symbol(client, state, symbol, equity, allow_entry)
+            if symbol in SIM_SYMBOLS:
+                handle_sim_symbol(state, symbol, equity, allow_entry)
+            else:
+                handle_symbol(client, state, symbol, equity, allow_entry)
         except Exception as e:
             notify(f"ERROR handling {symbol}: {e}")
 
     save_state(state)
 
 
+# ── Simulated symbols (AAVE, TRX — not on testnet) ───────────────────────────
+
+def handle_sim_symbol(state, symbol, equity, allow_entry):
+    candles = fetch_recent_candles(symbol, RESOLUTION, CANDLE_HISTORY)
+    if len(candles) < 50:
+        return
+
+    pos_state = state["positions"].get(symbol)
+
+    if pos_state and pos_state.get("strategy") == "sim":
+        manage_sim_position(state, symbol, candles, pos_state)
+        return
+
+    if not allow_entry:
+        return
+
+    result = build_pullback_signal(candles, symbol)
+    if result is None:
+        return
+
+    signal      = result["signal"]
+    sl_price    = result["sl_price"]
+    entry_price = float(candles[-2]["close"])
+    sl_dist     = abs(entry_price - sl_price)
+    if sl_dist <= 0:
+        return
+
+    equity_risked = equity * RISK_PER_TRADE
+    tp_price = entry_price + TP_MULT * sl_dist if signal == "long" else entry_price - TP_MULT * sl_dist
+
+    state["positions"][symbol] = {
+        "strategy": "sim",
+        "side": signal,
+        "entry_price": entry_price,
+        "tp_price": tp_price,
+        "sl_price": sl_price,
+        "entry_time": candles[-2]["time"],
+    }
+    notify(
+        f"ENTRY {symbol} {signal.upper()} (sim) @ {entry_price:.5g} | "
+        f"TP {_round_price(tp_price)} (2R) | SL {_round_price(sl_price)} (swing) | "
+        f"risk ${equity_risked:.2f}"
+    )
+
+
+def manage_sim_position(state, symbol, candles, pos_state):
+    side       = pos_state["side"]
+    sl_price   = pos_state["sl_price"]
+    tp_price   = pos_state["tp_price"]
+    entry_time = pos_state["entry_time"]
+    entry_px   = pos_state["entry_price"]
+
+    # Check all candles that closed after entry
+    for c in candles:
+        if int(c["time"]) <= entry_time:
+            continue
+        hi = float(c["high"])
+        lo = float(c["low"])
+
+        if side == "long":
+            if lo <= sl_price:
+                notify(f"{symbol} (sim): SL hit @ {sl_price:.5g} | Entry {entry_px:.5g}")
+                del state["positions"][symbol]
+                return
+            if hi >= tp_price:
+                notify(f"{symbol} (sim): TP hit @ {tp_price:.5g} | Entry {entry_px:.5g}")
+                del state["positions"][symbol]
+                return
+        else:
+            if hi >= sl_price:
+                notify(f"{symbol} (sim): SL hit @ {sl_price:.5g} | Entry {entry_px:.5g}")
+                del state["positions"][symbol]
+                return
+            if lo <= tp_price:
+                notify(f"{symbol} (sim): TP hit @ {tp_price:.5g} | Entry {entry_px:.5g}")
+                del state["positions"][symbol]
+                return
+
+
+# ── Testnet symbols ───────────────────────────────────────────────────────────
+
 def handle_symbol(client, state, symbol, equity, allow_entry):
     product_id = client.get_product_id(symbol)
     if product_id is None:
-        print(f"{symbol}: not listed on testnet, skipping")
         return
 
-    pos_state  = state["positions"].get(symbol)
+    pos_state = state["positions"].get(symbol)
 
     candles = fetch_recent_candles(symbol, RESOLUTION, CANDLE_HISTORY)
     if len(candles) < 50:
@@ -135,10 +225,10 @@ def handle_symbol(client, state, symbol, equity, allow_entry):
     if result is None:
         return
 
-    signal    = result["signal"]
-    sl_price  = result["sl_price"]
+    signal      = result["signal"]
+    sl_price    = result["sl_price"]
     entry_price = float(candles[-2]["close"])
-    sl_dist   = abs(entry_price - sl_price)
+    sl_dist     = abs(entry_price - sl_price)
     if sl_dist <= 0:
         return
 
@@ -174,10 +264,7 @@ def handle_symbol(client, state, symbol, equity, allow_entry):
     fill_price = float(entry_order.get("average_fill_price") or entry_price)
 
     fill_sl_dist = abs(fill_price - sl_price)
-    if signal == "long":
-        tp_price = fill_price + TP_MULT * fill_sl_dist
-    else:
-        tp_price = fill_price - TP_MULT * fill_sl_dist
+    tp_price = fill_price + TP_MULT * fill_sl_dist if signal == "long" else fill_price - TP_MULT * fill_sl_dist
 
     sl_order = client.place_stop_order(
         product_id, side=close_side, size=lots,
