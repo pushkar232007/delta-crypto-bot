@@ -105,8 +105,7 @@ class CTraderBot:
         from ctrader_open_api.messages.OpenApiMessages_pb2 import (
             ProtoOAApplicationAuthRes, ProtoOAAccountAuthRes,
             ProtoOASymbolsListRes,    ProtoOAReconcileRes,
-            ProtoOANewOrderRes,       ProtoOAClosePositionRes,
-            ProtoOAErrorRes,
+            ProtoOAExecutionEvent,    ProtoOAErrorRes,
         )
         pt = message.payloadType
 
@@ -146,8 +145,7 @@ class CTraderBot:
             self._build_ops()
             self._run_next(client)
 
-        elif pt in (ProtoOANewOrderRes().payloadType,
-                    ProtoOAClosePositionRes().payloadType):
+        elif pt == ProtoOAExecutionEvent().payloadType:
             self._run_next(client)
 
         elif pt == ProtoOAErrorRes().payloadType:
