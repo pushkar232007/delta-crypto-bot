@@ -1,28 +1,24 @@
-"""Real trading bot: BB Mean Reversion on Pepperstone cTrader demo account.
+"""Paper trading bot: BB Mean Reversion on validated forex pairs.
 
-Runs every hour via cron. Yahoo Finance supplies 1h candles for signal generation.
-cTrader Open API places and closes real demo orders (account 5313727).
+Runs every hour via cron. Fetches Yahoo Finance 1h data, applies
+BB(20,2) + RSI(14) + EMA200 strategy. Positions tracked in forex_state.json.
 
-Validated pairs on Pepperstone (USDINR dropped — not available for Indian residents):
+Validated pairs on Pepperstone (USDINR/USDZAR/USDTRY dropped):
   GBPUSD  PF 1.35/1.38  +23%    AUDUSD  PF 1.79/1.33  +28%
   USDCAD  PF 1.77/1.26  +19%    USDNOK  PF 1.50/1.25  +16%
   EURCAD  PF 1.19/1.58  +17%
 
 Long signal:  close < lower BB  AND RSI < 35 AND close > EMA200
 Short signal: close > upper BB  AND RSI > 65 AND close < EMA200
-Exit TP:      close crosses BB midline (managed by this bot every hour)
-Exit SL:      exchange stop order at 2×ATR (managed automatically by Pepperstone)
-Time stop:    24h if flat (|P&L| < 0.3R)
+Exit:         BB midline cross (TP), 2×ATR stop (SL), or 24h time stop.
 """
 import json
 import os
 import time
 import urllib.request
 
-from ctrader_client import CTraderBot
-
-PAIRS = ["GBPUSD", "AUDUSD", "USDCAD", "USDNOK", "EURCAD"]
-
+STARTING_EQUITY   = 50000.0
+RISK_PER_TRADE    = 0.05
 ATR_STOP_MULT     = 2.0
 BB_PERIOD         = 20
 BB_STD            = 2.0
@@ -35,6 +31,8 @@ TIME_STOP_CANDLES = 24
 TIME_STOP_R       = 0.3
 CANDLE_FETCH_DAYS = 60
 
+PAIRS      = ["GBPUSD=X", "AUDUSD=X", "USDCAD=X", "USDINR=X",
+              "USDNOK=X", "EURCAD=X", "USDZAR=X", "USDTRY=X"]
 STATE_PATH = os.path.join(os.path.dirname(__file__), "forex_state.json")
 ENV_PATH   = os.path.join(os.path.dirname(__file__), ".env")
 
@@ -71,9 +69,12 @@ def notify(msg):
 def load_state():
     if os.path.exists(STATE_PATH):
         raw = json.load(open(STATE_PATH))
-        # Return only the positions dict (drop legacy equity key if present)
-        return {"positions": raw.get("positions", {})}
-    return {"positions": {}}
+        if "equity" not in raw:
+            raw["equity"] = STARTING_EQUITY
+        if "positions" not in raw:
+            raw["positions"] = {}
+        return raw
+    return {"equity": STARTING_EQUITY, "positions": {}}
 
 
 def save_state(state):
@@ -82,8 +83,7 @@ def save_state(state):
 
 
 def fetch_candles(pair):
-    ticker = pair + "=X"
-    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{pair}"
            f"?interval=1h&range={CANDLE_FETCH_DAYS}d")
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=20) as resp:
@@ -95,7 +95,7 @@ def fetch_candles(pair):
     for i, ts in enumerate(timestamps):
         if any(q[k][i] is None for k in ("open", "high", "low", "close")):
             continue
-        candles.append({"time": ts, "high": q["high"][i],
+        candles.append({"time": ts, "open": q["open"][i], "high": q["high"][i],
                         "low": q["low"][i], "close": q["close"][i]})
     return sorted(candles, key=lambda c: c["time"])
 
@@ -155,127 +155,106 @@ def _rsi_series(closes, period=14):
     return out
 
 
-# ── Signal / exit logic ───────────────────────────────────────────────────────
+# ── Per-pair logic ────────────────────────────────────────────────────────────
 
-def check_entry(candles):
-    """Return signal dict or None. Uses only closed candles (excludes last)."""
-    closed = candles[:-1]
+def handle_pair(pair, state):
+    candles = fetch_candles(pair)
+    closed  = candles[:-1]
+
     if len(closed) < 220:
-        return None
+        return
+
     closes = [c["close"] for c in closed]
-    i = len(closed) - 1
+    atr    = _atr_series(closed, ATR_PERIOD)
+    ema200 = _ema_series(closes, EMA200_PERIOD)
+    bb_up, bb_mid, bb_lo = _bollinger(closes, BB_PERIOD, BB_STD)
+    rsi    = _rsi_series(closes, RSI_PERIOD)
 
-    atr_val          = _atr_series(closed, ATR_PERIOD)[i]
-    ema200           = _ema_series(closes, EMA200_PERIOD)[i]
-    bb_u, bb_m, bb_l = _bollinger(closes, BB_PERIOD, BB_STD)
-    rsi_val          = _rsi_series(closes, RSI_PERIOD)[i]
+    i      = len(closed) - 1
+    candle = closed[i]
+    name   = pair.replace("=X", "")
 
-    if any(v is None for v in (atr_val, ema200, bb_u[i], bb_m[i], bb_l[i], rsi_val)):
-        return None
+    if any(v is None for v in (atr[i], ema200[i], bb_up[i], bb_mid[i], bb_lo[i], rsi[i])):
+        return
 
-    close     = closes[i]
-    risk_dist = ATR_STOP_MULT * atr_val
+    pos = state["positions"].get(pair)
 
-    if close < bb_l[i] and rsi_val < RSI_OS and close > ema200:
-        stop = close - risk_dist
-        return {"side": "long",  "entry": close, "stop": stop,
-                "risk": risk_dist, "tp": bb_m[i]}
-    if close > bb_u[i] and rsi_val > RSI_OB and close < ema200:
-        stop = close + risk_dist
-        return {"side": "short", "entry": close, "stop": stop,
-                "risk": risk_dist, "tp": bb_m[i]}
-    return None
+    if pos is not None:
+        pos["bars_in_trade"] = pos.get("bars_in_trade", 0) + 1
+        ep    = pos["entry"]
+        stop  = pos["stop"]
+        close = candle["close"]
+        side  = pos["side"]
+        risk  = pos["risk"]
 
+        exit_price = None
+        reason     = None
 
-def check_exit(candles, pos):
-    """Return exit reason string or None. SL is exchange-managed — not checked here."""
-    closed = candles[:-1]
-    if len(closed) < 220:
-        return None
-    closes = [c["close"] for c in closed]
-    i = len(closed) - 1
+        if side == "long":
+            if candle["low"] <= stop:
+                exit_price, reason = stop, "stop"
+            elif close >= bb_mid[i]:
+                exit_price, reason = close, "tp_midline"
+        else:
+            if candle["high"] >= stop:
+                exit_price, reason = stop, "stop"
+            elif close <= bb_mid[i]:
+                exit_price, reason = close, "tp_midline"
 
-    _, bb_m, _ = _bollinger(closes, BB_PERIOD, BB_STD)
-    if bb_m[i] is None:
-        return None
+        if exit_price is None and pos["bars_in_trade"] >= TIME_STOP_CANDLES:
+            cur_r = ((close - ep) if side == "long" else (ep - close)) / risk
+            if abs(cur_r) < TIME_STOP_R:
+                exit_price, reason = close, "time_stop"
 
-    close = closes[i]
-    side  = pos["side"]
+        if exit_price is not None:
+            pnl    = (exit_price - ep) * pos["size"] if side == "long" else (ep - exit_price) * pos["size"]
+            r_mult = pnl / pos["equity_risked"]
+            state["equity"] += pnl
+            del state["positions"][pair]
+            tag = "WIN" if pnl > 0 else "LOSS"
+            notify(
+                f"{name} {tag}: closed {side.upper()} @ {exit_price:.5f} "
+                f"({reason.replace('_', ' ')}) | PnL ${pnl:+.2f} ({r_mult:+.2f}R) "
+                f"| equity ${state['equity']:.2f}"
+            )
+        else:
+            state["positions"][pair] = pos
+        return
 
-    if side == "long"  and close >= bb_m[i]:
-        return f"TP midline {bb_m[i]:.5f}"
-    if side == "short" and close <= bb_m[i]:
-        return f"TP midline {bb_m[i]:.5f}"
+    close     = candle["close"]
+    long_sig  = close < bb_lo[i] and rsi[i] < RSI_OS and close > ema200[i]
+    short_sig = close > bb_up[i] and rsi[i] > RSI_OB and close < ema200[i]
 
-    bars = pos.get("bars_in_trade", 0)
-    if bars >= TIME_STOP_CANDLES:
-        cur_r = ((close - pos["entry"]) if side == "long"
-                 else (pos["entry"] - close)) / pos["risk"]
-        if abs(cur_r) < TIME_STOP_R:
-            return "time stop (flat after 24h)"
+    if not (long_sig or short_sig):
+        return
 
-    return None
+    side      = "long" if long_sig else "short"
+    entry     = close
+    risk_dist = ATR_STOP_MULT * atr[i]
+    stop      = entry - risk_dist if side == "long" else entry + risk_dist
+    eq_risked = state["equity"] * RISK_PER_TRADE
+    size      = eq_risked / risk_dist
 
+    state["positions"][pair] = {
+        "side": side, "entry": entry, "stop": stop, "risk": risk_dist,
+        "size": size, "equity_risked": eq_risked,
+        "bars_in_trade": 0, "entry_time": candle["time"],
+    }
+    notify(
+        f"ENTRY {name} {side.upper()} @ {entry:.5f} "
+        f"| stop {stop:.5f} | target (BB mid) {bb_mid[i]:.5f} "
+        f"| risk ${eq_risked:.2f} | equity ${state['equity']:.2f}"
+    )
 
-# ── Main ──────────────────────────────────────────────────────────────────────
 
 def run_once():
-    state     = load_state()
-    positions = state["positions"]
-
-    for pos in positions.values():
-        pos["bars_in_trade"] = pos.get("bars_in_trade", 0) + 1
-
-    candles_by_pair = {}
+    state = load_state()
     for pair in PAIRS:
         try:
-            candles_by_pair[pair] = fetch_candles(pair)
+            handle_pair(pair, state)
         except Exception as e:
-            notify(f"ERROR fetching {pair}: {e}")
-
-    entry_signals = {}
-    close_targets = {}
-
-    for pair in PAIRS:
-        candles = candles_by_pair.get(pair)
-        if not candles:
-            continue
-        pos = positions.get(pair)
-        if pos:
-            reason = check_exit(candles, pos)
-            if reason:
-                close_targets[pair] = reason
-        else:
-            sig = check_entry(candles)
-            if sig:
-                entry_signals[pair] = sig
-
-    if not entry_signals and not close_targets and not positions:
-        save_state(state)
-        return
-
-    env = _load_env()
-    bot = CTraderBot(
-        client_id=env["CTRADER_CLIENT_ID"],
-        client_secret=env["CTRADER_CLIENT_SECRET"],
-        account_id=env["CTRADER_ACCOUNT_ID"],
-        demo=env.get("CTRADER_DEMO", "true").lower() == "true",
-    )
-    bot.state         = positions
-    bot.entry_signals = entry_signals
-    bot.close_targets = close_targets
-
-    try:
-        bot.run()
-    except Exception as e:
-        notify(f"ERROR cTrader session: {e}")
-        save_state(state)
-        return
-
+            notify(f"ERROR {pair}: {e}")
     save_state(state)
-
-    for msg in bot.notifications:
-        notify(msg)
 
 
 if __name__ == "__main__":
