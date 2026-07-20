@@ -153,6 +153,7 @@ def handle_sim_symbol(state, symbol, equity, allow_entry):
         "entry_price": entry_price,
         "tp_price": tp_price,
         "sl_price": sl_price,
+        "equity_risked": equity_risked,
         "entry_time": candles[-2]["time"],
     }
     notify(
@@ -163,11 +164,12 @@ def handle_sim_symbol(state, symbol, equity, allow_entry):
 
 
 def manage_sim_position(state, symbol, candles, pos_state):
-    side       = pos_state["side"]
-    sl_price   = pos_state["sl_price"]
-    tp_price   = pos_state["tp_price"]
-    entry_time = pos_state["entry_time"]
-    entry_px   = pos_state["entry_price"]
+    side         = pos_state["side"]
+    sl_price     = pos_state["sl_price"]
+    tp_price     = pos_state["tp_price"]
+    entry_time   = pos_state["entry_time"]
+    entry_px     = pos_state["entry_price"]
+    eq_risked    = pos_state.get("equity_risked", 0)
 
     # Check all candles that closed after entry
     for c in candles:
@@ -178,20 +180,24 @@ def manage_sim_position(state, symbol, candles, pos_state):
 
         if side == "long":
             if lo <= sl_price:
-                notify(f"{symbol} (sim): SL hit @ {sl_price:.5g} | Entry {entry_px:.5g}")
+                pnl = -eq_risked
+                notify(f"{symbol} (sim) LOSS: SL hit @ {sl_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (-1.00R)")
                 del state["positions"][symbol]
                 return
             if hi >= tp_price:
-                notify(f"{symbol} (sim): TP hit @ {tp_price:.5g} | Entry {entry_px:.5g}")
+                pnl = eq_risked * TP_MULT
+                notify(f"{symbol} (sim) WIN: TP hit @ {tp_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (+{TP_MULT:.2f}R)")
                 del state["positions"][symbol]
                 return
         else:
             if hi >= sl_price:
-                notify(f"{symbol} (sim): SL hit @ {sl_price:.5g} | Entry {entry_px:.5g}")
+                pnl = -eq_risked
+                notify(f"{symbol} (sim) LOSS: SL hit @ {sl_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (-1.00R)")
                 del state["positions"][symbol]
                 return
             if lo <= tp_price:
-                notify(f"{symbol} (sim): TP hit @ {tp_price:.5g} | Entry {entry_px:.5g}")
+                pnl = eq_risked * TP_MULT
+                notify(f"{symbol} (sim) WIN: TP hit @ {tp_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (+{TP_MULT:.2f}R)")
                 del state["positions"][symbol]
                 return
 
@@ -284,6 +290,7 @@ def handle_symbol(client, state, symbol, equity, allow_entry):
         "entry_price": fill_price,
         "tp_price": tp_price,
         "sl_price": sl_price,
+        "equity_risked": equity_risked,
         "lots": lots,
         "contract_value": contract_value,
         "entry_time": candles[-2]["time"],
@@ -301,12 +308,33 @@ def manage_position(client, state, symbol, product_id, pos_state):
     live_pos  = client.get_positions(product_id=product_id)
     live_size = abs(int(live_pos.get("size", 0))) if live_pos else 0
     if live_size == 0:
+        candles   = fetch_recent_candles(symbol, RESOLUTION, CANDLE_HISTORY)
+        last_close = float(candles[-2]["close"]) if len(candles) >= 2 else None
+        side      = pos_state["side"]
+        tp_price  = pos_state["tp_price"]
+        sl_price  = pos_state["sl_price"]
+        entry_px  = pos_state["entry_price"]
+        eq_risked = pos_state.get("equity_risked", 0)
+
+        if last_close is not None:
+            if side == "long":
+                hit_tp = last_close >= tp_price
+            else:
+                hit_tp = last_close <= tp_price
+        else:
+            hit_tp = None
+
         client.cancel_all_orders(product_id)
-        notify(
-            f"{symbol}: position closed (TP/SL filled). "
-            f"Entry={pos_state['entry_price']:.5g} "
-            f"TP={pos_state['tp_price']:.5g} SL={pos_state['sl_price']:.5g}"
-        )
+
+        if hit_tp is True:
+            pnl = eq_risked * TP_MULT
+            notify(f"{symbol} WIN: TP hit @ {tp_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (+{TP_MULT:.2f}R)")
+        elif hit_tp is False:
+            pnl = -eq_risked
+            notify(f"{symbol} LOSS: SL hit @ {sl_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (-1.00R)")
+        else:
+            notify(f"{symbol}: position closed | Entry {entry_px:.5g} TP {tp_price:.5g} SL {sl_price:.5g}")
+
         del state["positions"][symbol]
 
 
