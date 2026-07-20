@@ -89,14 +89,14 @@ class CTraderBot:
 
     # ── Twisted callbacks ────────────────────────────────────────────────────
 
-    def _on_connected(self, client, event):
+    def _on_connected(self, client):
         from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOAApplicationAuthReq
         req = ProtoOAApplicationAuthReq()
         req.clientId     = self.client_id
         req.clientSecret = self.client_secret
         client.send(req)
 
-    def _on_disconnected(self, client, event):
+    def _on_disconnected(self, client, reason=None):
         from twisted.internet import reactor
         if reactor.running:
             reactor.stop()
