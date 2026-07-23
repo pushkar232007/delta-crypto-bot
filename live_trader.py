@@ -217,7 +217,7 @@ def handle_symbol(client, state, symbol, equity, allow_entry):
         return
 
     if pos_state:
-        manage_position(client, state, symbol, product_id, pos_state)
+        manage_position(client, state, symbol, product_id, pos_state, candles)
         return
 
     if not allow_entry:
@@ -276,12 +276,7 @@ def handle_symbol(client, state, symbol, equity, allow_entry):
         product_id, side=close_side, size=lots,
         stop_price=_round_price(sl_price),
     )
-    tp_order = client.place_order(
-        product_id, side=close_side, size=lots,
-        order_type="limit_order",
-        limit_price=_round_price(tp_price),
-        reduce_only=True,
-    )
+    # TP managed via market close on each bot run (Delta limit orders unreliable on testnet)
 
     state["positions"][symbol] = {
         "strategy": "pullback",
@@ -295,7 +290,6 @@ def handle_symbol(client, state, symbol, equity, allow_entry):
         "contract_value": contract_value,
         "entry_time": candles[-2]["time"],
         "sl_order_id": sl_order["id"],
-        "tp_order_id": tp_order["id"],
     }
     notify(
         f"ENTRY {symbol} {signal.upper()} {lots} lots @ {fill_price:.5g} | "
@@ -304,28 +298,27 @@ def handle_symbol(client, state, symbol, equity, allow_entry):
     )
 
 
-def manage_position(client, state, symbol, product_id, pos_state):
+def manage_position(client, state, symbol, product_id, pos_state, candles):
     live_pos  = client.get_positions(product_id=product_id)
     live_size = abs(int(live_pos.get("size", 0))) if live_pos else 0
-    if live_size == 0:
-        candles   = fetch_recent_candles(symbol, RESOLUTION, CANDLE_HISTORY)
-        last_close = float(candles[-2]["close"]) if len(candles) >= 2 else None
-        side      = pos_state["side"]
-        tp_price  = pos_state["tp_price"]
-        sl_price  = pos_state["sl_price"]
-        entry_px  = pos_state["entry_price"]
-        eq_risked = pos_state.get("equity_risked") or (
-            pos_state.get("lots", 0) * pos_state.get("contract_value", 0) *
-            abs(pos_state["entry_price"] - pos_state["sl_price"])
-        )
 
+    side       = pos_state["side"]
+    tp_price   = pos_state["tp_price"]
+    sl_price   = pos_state["sl_price"]
+    entry_px   = pos_state["entry_price"]
+    entry_time = pos_state["entry_time"]
+    eq_risked  = pos_state.get("equity_risked") or (
+        pos_state.get("lots", 0) * pos_state.get("contract_value", 0) *
+        abs(pos_state["entry_price"] - pos_state["sl_price"])
+    )
+    close_side = "sell" if side == "long" else "buy"
+
+    if live_size == 0:
+        # Closed by exchange (SL stop order fired)
+        last_close = float(candles[-2]["close"]) if len(candles) >= 2 else None
+        hit_tp = None
         if last_close is not None:
-            if side == "long":
-                hit_tp = last_close >= tp_price
-            else:
-                hit_tp = last_close <= tp_price
-        else:
-            hit_tp = None
+            hit_tp = last_close >= tp_price if side == "long" else last_close <= tp_price
 
         client.cancel_all_orders(product_id)
 
@@ -339,6 +332,37 @@ def manage_position(client, state, symbol, product_id, pos_state):
             notify(f"{symbol}: position closed | Entry {entry_px:.5g} TP {tp_price:.5g} SL {sl_price:.5g}")
 
         del state["positions"][symbol]
+        return
+
+    # Position open — check if TP was hit in any candle since entry
+    for c in candles:
+        if int(c["time"]) <= entry_time:
+            continue
+        hi = float(c["high"])
+        lo = float(c["low"])
+
+        if side == "long":
+            if lo <= sl_price:
+                break  # SL zone — let exchange stop order handle it
+            if hi >= tp_price:
+                client.place_order(product_id, side=close_side, size=live_size,
+                                   order_type="market_order", reduce_only=True)
+                client.cancel_all_orders(product_id)
+                pnl = eq_risked * TP_MULT
+                notify(f"{symbol} WIN: TP hit @ {tp_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (+{TP_MULT:.2f}R)")
+                del state["positions"][symbol]
+                return
+        else:
+            if hi >= sl_price:
+                break  # SL zone
+            if lo <= tp_price:
+                client.place_order(product_id, side=close_side, size=live_size,
+                                   order_type="market_order", reduce_only=True)
+                client.cancel_all_orders(product_id)
+                pnl = eq_risked * TP_MULT
+                notify(f"{symbol} WIN: TP hit @ {tp_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (+{TP_MULT:.2f}R)")
+                del state["positions"][symbol]
+                return
 
 
 if __name__ == "__main__":
