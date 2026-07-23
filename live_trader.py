@@ -314,7 +314,10 @@ def manage_position(client, state, symbol, product_id, pos_state):
         tp_price  = pos_state["tp_price"]
         sl_price  = pos_state["sl_price"]
         entry_px  = pos_state["entry_price"]
-        eq_risked = pos_state.get("equity_risked", 0)
+        eq_risked = pos_state.get("equity_risked") or (
+            pos_state.get("lots", 0) * pos_state.get("contract_value", 0) *
+            abs(pos_state["entry_price"] - pos_state["sl_price"])
+        )
 
         if last_close is not None:
             if side == "long":
