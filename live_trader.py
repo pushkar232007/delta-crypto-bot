@@ -275,7 +275,10 @@ def handle_symbol(client, state, symbol, equity, allow_entry):
     entry_order = client.place_order(
         product_id, side=order_side, size=lots, order_type="market_order"
     )
-    fill_price = float(entry_order.get("average_fill_price") or entry_price)
+    if not entry_order.get("average_fill_price"):
+        notify(f"{symbol}: entry order not filled (state: {entry_order.get('state', 'unknown')}), skipping")
+        return
+    fill_price = float(entry_order["average_fill_price"])
 
     fill_sl_dist = abs(fill_price - sl_price)
     tp_price = fill_price + TP_MULT * fill_sl_dist if signal == "long" else fill_price - TP_MULT * fill_sl_dist
