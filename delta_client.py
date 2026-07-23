@@ -157,3 +157,13 @@ class DeltaClient:
     def cancel_all_orders(self, product_id):
         for o in self.get_open_orders(product_id):
             self.cancel_order(product_id, o["id"])
+
+    def get_fills(self, product_id, page_size=20, start_time=None):
+        params = {"product_id": product_id, "page_size": page_size}
+        if start_time:
+            params["start_time"] = int(start_time)
+        resp = self._request("GET", "/v2/fills", params=params)
+        result = resp.get("result", {})
+        if isinstance(result, dict):
+            return result.get("data", [])
+        return result if isinstance(result, list) else []

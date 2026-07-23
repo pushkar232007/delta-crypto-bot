@@ -96,6 +96,11 @@ def run_once():
     client = DeltaClient()
     state  = load_state()
 
+    today = int(time.time()) // 86400
+    if state.get("no_entry_date", 0) != today:
+        state.pop("no_entry", None)
+        state["no_entry_date"] = today
+
     balances = client.get_balances()
     equity   = next(
         (float(b["available_balance"]) for b in balances if b.get("asset_symbol") == "USD"),
@@ -220,6 +225,9 @@ def handle_symbol(client, state, symbol, equity, allow_entry):
         manage_position(client, state, symbol, product_id, pos_state, candles)
         return
 
+    if state.get("no_entry", {}).get(symbol):
+        return
+
     if not allow_entry:
         return
 
@@ -313,23 +321,54 @@ def manage_position(client, state, symbol, product_id, pos_state, candles):
     )
     close_side = "sell" if side == "long" else "buy"
 
-    if live_size == 0:
-        # Closed by exchange (SL stop order fired)
-        last_close = float(candles[-2]["close"]) if len(candles) >= 2 else None
-        hit_tp = None
-        if last_close is not None:
-            hit_tp = last_close >= tp_price if side == "long" else last_close <= tp_price
+    lots = pos_state.get("lots", 0)
+    cv   = pos_state.get("contract_value", 0)
 
+    if live_size == 0:
         client.cancel_all_orders(product_id)
 
-        if hit_tp is True:
-            pnl = eq_risked * TP_MULT
-            notify(f"{symbol} WIN: TP hit @ {tp_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (+{TP_MULT:.2f}R)")
-        elif hit_tp is False:
-            pnl = -eq_risked
-            notify(f"{symbol} LOSS: SL hit @ {sl_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (-1.00R)")
+        # Get actual exit price from fills API
+        exit_price = None
+        try:
+            fills = client.get_fills(product_id, page_size=20, start_time=entry_time)
+            exit_fill_side = "sell" if side == "long" else "buy"
+            for f in fills:
+                if f.get("side") == exit_fill_side:
+                    exit_price = float(f["price"])
+                    break
+        except Exception:
+            pass
+
+        if exit_price and lots and cv:
+            pnl    = (exit_price - entry_px) * lots * cv if side == "long" else (entry_px - exit_price) * lots * cv
+            r_mult = pnl / eq_risked if eq_risked else 0
+
+            if pnl < 0:
+                is_sl = (exit_price <= sl_price) if side == "long" else (exit_price >= sl_price)
+                if is_sl:
+                    notify(f"{symbol} LOSS: SL hit @ {exit_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} ({r_mult:+.2f}R)")
+                else:
+                    state.setdefault("no_entry", {})[symbol] = True
+                    notify(f"{symbol} CLOSED: manual @ {exit_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} ({r_mult:+.2f}R) | re-entry blocked today")
+            else:
+                at_tp = (exit_price >= tp_price) if side == "long" else (exit_price <= tp_price)
+                if at_tp:
+                    notify(f"{symbol} WIN: TP hit @ {exit_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (+{r_mult:.2f}R)")
+                else:
+                    state.setdefault("no_entry", {})[symbol] = True
+                    notify(f"{symbol} CLOSED: manual @ {exit_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (+{r_mult:.2f}R) | re-entry blocked today")
         else:
-            notify(f"{symbol}: position closed | Entry {entry_px:.5g} TP {tp_price:.5g} SL {sl_price:.5g}")
+            # Fallback: fills unavailable, use candle heuristic
+            last_close = float(candles[-2]["close"]) if len(candles) >= 2 else None
+            if last_close is not None:
+                if side == "long":
+                    tag, pnl = ("WIN", eq_risked * TP_MULT) if last_close >= tp_price else ("LOSS", -eq_risked)
+                else:
+                    tag, pnl = ("WIN", eq_risked * TP_MULT) if last_close <= tp_price else ("LOSS", -eq_risked)
+                r_mult = TP_MULT if tag == "WIN" else -1.0
+                notify(f"{symbol} {tag}: Entry {entry_px:.5g} | PnL ${pnl:+.2f} ({r_mult:+.2f}R) [estimated]")
+            else:
+                notify(f"{symbol}: position closed | Entry {entry_px:.5g}")
 
         del state["positions"][symbol]
         return
@@ -345,22 +384,26 @@ def manage_position(client, state, symbol, product_id, pos_state, candles):
             if lo <= sl_price:
                 break  # SL zone — let exchange stop order handle it
             if hi >= tp_price:
-                client.place_order(product_id, side=close_side, size=live_size,
-                                   order_type="market_order", reduce_only=True)
+                order = client.place_order(product_id, side=close_side, size=live_size,
+                                           order_type="market_order", reduce_only=True)
                 client.cancel_all_orders(product_id)
-                pnl = eq_risked * TP_MULT
-                notify(f"{symbol} WIN: TP hit @ {tp_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (+{TP_MULT:.2f}R)")
+                fill_px = float(order.get("average_fill_price") or tp_price)
+                pnl     = (fill_px - entry_px) * lots * cv if lots and cv else eq_risked * TP_MULT
+                r_mult  = pnl / eq_risked if eq_risked else TP_MULT
+                notify(f"{symbol} WIN: TP hit @ {fill_px:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (+{r_mult:.2f}R)")
                 del state["positions"][symbol]
                 return
         else:
             if hi >= sl_price:
                 break  # SL zone
             if lo <= tp_price:
-                client.place_order(product_id, side=close_side, size=live_size,
-                                   order_type="market_order", reduce_only=True)
+                order = client.place_order(product_id, side=close_side, size=live_size,
+                                           order_type="market_order", reduce_only=True)
                 client.cancel_all_orders(product_id)
-                pnl = eq_risked * TP_MULT
-                notify(f"{symbol} WIN: TP hit @ {tp_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (+{TP_MULT:.2f}R)")
+                fill_px = float(order.get("average_fill_price") or tp_price)
+                pnl     = (entry_px - fill_px) * lots * cv if lots and cv else eq_risked * TP_MULT
+                r_mult  = pnl / eq_risked if eq_risked else TP_MULT
+                notify(f"{symbol} WIN: TP hit @ {fill_px:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (+{r_mult:.2f}R)")
                 del state["positions"][symbol]
                 return
 
