@@ -283,10 +283,23 @@ def handle_symbol(client, state, symbol, equity, allow_entry):
     fill_sl_dist = abs(fill_price - sl_price)
     tp_price = fill_price + TP_MULT * fill_sl_dist if signal == "long" else fill_price - TP_MULT * fill_sl_dist
 
-    sl_order = client.place_stop_order(
-        product_id, side=close_side, size=lots,
-        stop_price=_round_price(sl_price),
-    )
+    sl_valid = (sl_price < fill_price) if signal == "long" else (sl_price > fill_price)
+    if not sl_valid:
+        client.place_order(product_id, side=close_side, size=lots, order_type="market_order", reduce_only=True)
+        notify(f"{symbol}: SL {_round_price(sl_price)} invalid vs fill {fill_price:.5g} ({signal.upper()}) — aborted, closed")
+        return
+
+    try:
+        sl_order = client.place_stop_order(
+            product_id, side=close_side, size=lots,
+            stop_price=_round_price(sl_price),
+        )
+    except RuntimeError as e:
+        if "immediate_execution_stop_order" in str(e):
+            client.place_order(product_id, side=close_side, size=lots, order_type="market_order", reduce_only=True)
+            notify(f"{symbol}: SL rejected (immediate execution) — aborted, closed")
+            return
+        raise
     # TP managed via market close on each bot run (Delta limit orders unreliable on testnet)
 
     state["positions"][symbol] = {
