@@ -403,10 +403,20 @@ def manage_position(client, state, symbol, product_id, pos_state, candles):
                 order = client.place_order(product_id, side=close_side, size=live_size,
                                            order_type="market_order", reduce_only=True)
                 client.cancel_all_orders(product_id)
-                fill_px = float(order.get("average_fill_price") or tp_price)
-                pnl     = (fill_px - entry_px) * lots * cv if lots and cv else eq_risked * TP_MULT
-                r_mult  = pnl / eq_risked if eq_risked else TP_MULT
-                notify(f"{symbol} WIN: TP hit @ {fill_px:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (+{r_mult:.2f}R)")
+                fill_px_raw = order.get("average_fill_price")
+                if not fill_px_raw:
+                    try:
+                        for f in client.get_fills(product_id, page_size=5, start_time=entry_time):
+                            if f.get("side") == close_side:
+                                fill_px_raw = f["price"]
+                                break
+                    except Exception:
+                        pass
+                fill_px = float(fill_px_raw) if fill_px_raw else tp_price
+                pnl    = (fill_px - entry_px) * lots * cv if lots and cv else eq_risked * TP_MULT
+                r_mult = pnl / eq_risked if eq_risked else TP_MULT
+                label  = "WIN" if pnl >= 0 else "CLOSED"
+                notify(f"{symbol} {label}: TP triggered @ {fill_px:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} ({r_mult:+.2f}R)")
                 del state["positions"][symbol]
                 return
         else:
@@ -416,10 +426,20 @@ def manage_position(client, state, symbol, product_id, pos_state, candles):
                 order = client.place_order(product_id, side=close_side, size=live_size,
                                            order_type="market_order", reduce_only=True)
                 client.cancel_all_orders(product_id)
-                fill_px = float(order.get("average_fill_price") or tp_price)
-                pnl     = (entry_px - fill_px) * lots * cv if lots and cv else eq_risked * TP_MULT
-                r_mult  = pnl / eq_risked if eq_risked else TP_MULT
-                notify(f"{symbol} WIN: TP hit @ {fill_px:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (+{r_mult:.2f}R)")
+                fill_px_raw = order.get("average_fill_price")
+                if not fill_px_raw:
+                    try:
+                        for f in client.get_fills(product_id, page_size=5, start_time=entry_time):
+                            if f.get("side") == close_side:
+                                fill_px_raw = f["price"]
+                                break
+                    except Exception:
+                        pass
+                fill_px = float(fill_px_raw) if fill_px_raw else tp_price
+                pnl    = (entry_px - fill_px) * lots * cv if lots and cv else eq_risked * TP_MULT
+                r_mult = pnl / eq_risked if eq_risked else TP_MULT
+                label  = "WIN" if pnl >= 0 else "CLOSED"
+                notify(f"{symbol} {label}: TP triggered @ {fill_px:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} ({r_mult:+.2f}R)")
                 del state["positions"][symbol]
                 return
 
