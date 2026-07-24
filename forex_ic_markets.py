@@ -1,19 +1,9 @@
-"""BB Mean Reversion forex bot.
+"""IC Markets demo: USDZAR + USDTRY via cTrader API.
 
-Pair routing:
-  CTRADER_PAIRS → real demo orders via cTrader Open API (Pepperstone demo 5313727)
-  SIM_PAIRS     → paper simulation (Yahoo Finance prices, local state tracking)
+Same BB Mean Reversion strategy as forex_trader.py.
+Separate script to avoid Twisted reactor conflict with Pepperstone bot.
 
-Strategy:
-  Long:  close < lower BB AND RSI < 35 AND close > EMA200
-  Short: close > upper BB AND RSI > 65 AND close < EMA200
-  Exit:  BB midline cross (TP) | 2×ATR stop loss | 24h time stop
-
-Validated pairs:
-  GBPUSD  PF 1.35/1.38  +23%    AUDUSD  PF 1.79/1.33  +28%
-  USDCAD  PF 1.77/1.26  +19%    USDNOK  PF 1.50/1.25  +16%
-  EURCAD  PF 1.19/1.58  +17%    USDTRY  PF 3.46/3.22  +47%
-  USDINR  PF 1.21/1.67  +22%    USDZAR  PF 1.30/1.25  +10%
+Account: IC Markets demo 10089493 (USD, Raw Spread, 1:200)
 """
 import json
 import os
@@ -21,8 +11,6 @@ import urllib.request
 
 from ctrader_client import CTraderBot
 
-DEMO_CAPITAL_INR    = 50_000          # ₹50K demo capital (update when going live)
-DEMO_CAPITAL_USD    = 595             # ₹50K ÷ ~84 INR/USD
 RISK_PER_TRADE      = 0.05
 ATR_STOP_MULT       = 2.0
 BB_PERIOD           = 20
@@ -35,12 +23,12 @@ ATR_PERIOD          = 14
 TIME_STOP_CANDLES   = 24
 TIME_STOP_R         = 0.3
 CANDLE_FETCH_DAYS   = 60
-SIM_STARTING_EQUITY = 50000.0
+DEMO_CAPITAL_USD    = 595   # ₹50K at ~84 INR/USD
 
-CTRADER_PAIRS = ["GBPUSD=X", "AUDUSD=X", "USDCAD=X", "USDNOK=X", "EURCAD=X"]
-SIM_PAIRS     = ["USDINR=X"]  # USDZAR/USDTRY moved to forex_ic_markets.py (IC Markets demo)
+IC_ACCOUNT_ID = 10089493
+IC_PAIRS      = ["USDZAR=X", "USDTRY=X"]
 
-STATE_PATH = os.path.join(os.path.dirname(__file__), "forex_state.json")
+STATE_PATH = os.path.join(os.path.dirname(__file__), "forex_ic_state.json")
 ENV_PATH   = os.path.join(os.path.dirname(__file__), ".env")
 
 
@@ -76,12 +64,10 @@ def notify(msg):
 def load_state():
     if os.path.exists(STATE_PATH):
         raw = json.load(open(STATE_PATH))
-        if "equity" not in raw:
-            raw["equity"] = SIM_STARTING_EQUITY
         if "positions" not in raw:
             raw["positions"] = {}
         return raw
-    return {"equity": SIM_STARTING_EQUITY, "positions": {}}
+    return {"positions": {}}
 
 
 def save_state(state):
@@ -108,9 +94,7 @@ def fetch_candles(pair):
 
 
 def _ema_series(values, period):
-    k   = 2 / (period + 1)
-    val = None
-    out = []
+    k, val, out = 2 / (period + 1), None, []
     for v in values:
         val = v if val is None else v * k + val * (1 - k)
         out.append(val)
@@ -118,8 +102,7 @@ def _ema_series(values, period):
 
 
 def _atr_series(candles, period=14):
-    out = [None]
-    trs = []
+    out, trs = [None], []
     for i in range(1, len(candles)):
         tr = max(candles[i]["high"] - candles[i]["low"],
                  abs(candles[i]["high"] - candles[i - 1]["close"]),
@@ -145,12 +128,10 @@ def _bollinger(closes, period=20, mult=2.0):
 
 
 def _rsi_series(closes, period=14):
-    out = [None]
-    gains, losses = [], []
+    out, gains, losses = [None], [], []
     for i in range(1, len(closes)):
         d = closes[i] - closes[i - 1]
-        gains.append(max(0.0, d))
-        losses.append(max(0.0, -d))
+        gains.append(max(0.0, d)); losses.append(max(0.0, -d))
         if len(gains) < period:
             out.append(None)
         else:
@@ -170,9 +151,7 @@ def _indicators(closed):
     )
 
 
-# ── cTrader pairs ─────────────────────────────────────────────────────────────
-
-def handle_ctrader_pair(pair, state, entry_signals, close_targets):
+def handle_pair(pair, state, entry_signals, close_targets):
     name    = pair.replace("=X", "")
     candles = fetch_candles(pair)
     closed  = candles[:-1]
@@ -213,11 +192,9 @@ def handle_ctrader_pair(pair, state, entry_signals, close_targets):
     side      = "long" if long_sig else "short"
     risk_dist = ATR_STOP_MULT * atr[i]
 
-    # Volume: risk 5% of ₹50K capital per trade
-    # cTrader volume units: 100 = 1 standard lot (100,000 base units)
     risk_usd = DEMO_CAPITAL_USD * RISK_PER_TRADE
     lots     = risk_usd / (100_000 * risk_dist) if risk_dist > 0 else 0
-    volume   = max(1, min(100, round(lots * 100)))  # capped at 1 lot for safety
+    volume   = max(1, min(100, round(lots * 100)))
 
     entry_signals[name] = {
         "side":   side,
@@ -229,138 +206,40 @@ def handle_ctrader_pair(pair, state, entry_signals, close_targets):
     }
 
 
-# ── Sim pairs ─────────────────────────────────────────────────────────────────
-
-def handle_sim_pair(pair, state):
-    candles = fetch_candles(pair)
-    closed  = candles[:-1]
-    if len(closed) < 220:
-        return
-
-    atr, ema200, bb_up, bb_mid, bb_lo, rsi = _indicators(closed)
-    i      = len(closed) - 1
-    candle = closed[i]
-    name   = pair.replace("=X", "")
-
-    if any(v is None for v in (atr[i], ema200[i], bb_up[i], bb_mid[i], bb_lo[i], rsi[i])):
-        return
-
-    pos = state["positions"].get(pair)
-
-    if pos is not None:
-        pos["bars_in_trade"] = pos.get("bars_in_trade", 0) + 1
-        ep    = pos["entry"]
-        stop  = pos["stop"]
-        close = candle["close"]
-        side  = pos["side"]
-        risk  = pos["risk"]
-
-        exit_price = None
-        reason     = None
-
-        if side == "long":
-            if candle["low"] <= stop:
-                exit_price, reason = stop, "stop"
-            elif close >= bb_mid[i]:
-                exit_price, reason = close, "tp_midline"
-        else:
-            if candle["high"] >= stop:
-                exit_price, reason = stop, "stop"
-            elif close <= bb_mid[i]:
-                exit_price, reason = close, "tp_midline"
-
-        if exit_price is None and pos["bars_in_trade"] >= TIME_STOP_CANDLES:
-            cur_r = ((close - ep) if side == "long" else (ep - close)) / risk
-            if abs(cur_r) < TIME_STOP_R:
-                exit_price, reason = close, "time_stop"
-
-        if exit_price is not None:
-            pnl    = (exit_price - ep) * pos["size"] if side == "long" else (ep - exit_price) * pos["size"]
-            r_mult = pnl / pos["equity_risked"]
-            state["equity"] += pnl
-            del state["positions"][pair]
-            tag = "WIN" if pnl > 0 else "LOSS"
-            notify(
-                f"{name} {tag} (sim): closed {side.upper()} @ {exit_price:.5f} "
-                f"({reason.replace('_', ' ')}) | PnL ${pnl:+.2f} ({r_mult:+.2f}R) "
-                f"| sim equity ${state['equity']:.2f}"
-            )
-        else:
-            state["positions"][pair] = pos
-        return
-
-    close     = candle["close"]
-    long_sig  = close < bb_lo[i] and rsi[i] < RSI_OS and close > ema200[i]
-    short_sig = close > bb_up[i] and rsi[i] > RSI_OB and close < ema200[i]
-    if not (long_sig or short_sig):
-        return
-
-    side      = "long" if long_sig else "short"
-    risk_dist = ATR_STOP_MULT * atr[i]
-    stop      = close - risk_dist if side == "long" else close + risk_dist
-    eq_risked = state["equity"] * RISK_PER_TRADE
-    size      = eq_risked / risk_dist
-
-    state["positions"][pair] = {
-        "side": side, "entry": close, "stop": stop, "risk": risk_dist,
-        "size": size, "equity_risked": eq_risked,
-        "bars_in_trade": 0, "entry_time": candle["time"],
-    }
-    notify(
-        f"ENTRY {name} {side.upper()} (sim) @ {close:.5f} "
-        f"| stop {stop:.5f} | target (BB mid) {bb_mid[i]:.5f} "
-        f"| risk ${eq_risked:.2f} | sim equity ${state['equity']:.2f}"
-    )
-
-
-# ── Main ──────────────────────────────────────────────────────────────────────
-
 def run_once():
     env   = _load_env()
     state = load_state()
 
-    # Migrate old "GBPUSD=X" keys to "GBPUSD" for cTrader pairs
-    for pair in CTRADER_PAIRS:
-        name = pair.replace("=X", "")
-        if pair in state["positions"] and name not in state["positions"]:
-            state["positions"][name] = state["positions"].pop(pair)
-
     entry_signals = {}
     close_targets = {}
-    ctrader_names = {p.replace("=X", "") for p in CTRADER_PAIRS}
+    pair_names    = {p.replace("=X", "") for p in IC_PAIRS}
 
-    for pair in CTRADER_PAIRS:
+    for pair in IC_PAIRS:
         try:
-            handle_ctrader_pair(pair, state, entry_signals, close_targets)
+            handle_pair(pair, state, entry_signals, close_targets)
         except Exception as e:
             notify(f"ERROR {pair}: {e}")
 
-    ctrader_positions = {k: v for k, v in state["positions"].items() if k in ctrader_names}
-    if entry_signals or close_targets or ctrader_positions:
+    positions = {k: v for k, v in state["positions"].items() if k in pair_names}
+    if entry_signals or close_targets or positions:
         try:
             bot = CTraderBot(
                 client_id=env["CTRADER_CLIENT_ID"],
                 client_secret=env["CTRADER_CLIENT_SECRET"],
-                account_id=int(env["CTRADER_ACCOUNT_ID"]),
-                demo=env.get("CTRADER_DEMO", "true").lower() == "true",
+                account_id=IC_ACCOUNT_ID,
+                demo=True,
             )
-            bot.state         = ctrader_positions
+            bot.state         = positions
             bot.entry_signals = entry_signals
             bot.close_targets = close_targets
             bot.run()
-            for name in ctrader_names:
+            for name in pair_names:
                 state["positions"].pop(name, None)
             state["positions"].update(bot.state)
             for msg in bot.notifications:
                 notify(msg)
         except Exception as e:
-            notify(f"ERROR cTrader: {e}")
-
-    for pair in SIM_PAIRS:
-        try:
-            handle_sim_pair(pair, state)
-        except Exception as e:
-            notify(f"ERROR {pair}: {e}")
+            notify(f"ERROR IC Markets cTrader: {e}")
 
     save_state(state)
 

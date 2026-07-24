@@ -227,7 +227,8 @@ class CTraderBot:
             req.symbolId  = sym_id
             req.orderType = 1  # MARKET
             req.tradeSide = 1 if sig["side"] == "long" else 2   # BUY / SELL
-            req.volume    = sig.get("volume", DEMO_VOLUME)
+            vol = sig.get("volume", DEMO_VOLUME)
+            req.volume    = vol
             req.stopLoss  = sig["stop"]
             client.send(req)
             self.state[pair] = {
@@ -241,6 +242,6 @@ class CTraderBot:
             self.notifications.append(
                 f"ENTRY {pair} {sig['side'].upper()} @ {sig['entry']:.5f} | "
                 f"SL {sig['stop']:.5f} | TP (BB mid) {sig['tp']:.5f} | "
-                f"vol {DEMO_VOLUME} (0.1 lot)"
+                f"vol {vol}"
             )
         return _fn
