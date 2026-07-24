@@ -21,6 +21,8 @@ import urllib.request
 
 from ctrader_client import CTraderBot
 
+DEMO_CAPITAL_INR    = 50_000          # ₹50K demo capital (update when going live)
+DEMO_CAPITAL_USD    = 595             # ₹50K ÷ ~84 INR/USD
 RISK_PER_TRADE      = 0.05
 ATR_STOP_MULT       = 2.0
 BB_PERIOD           = 20
@@ -210,12 +212,20 @@ def handle_ctrader_pair(pair, state, entry_signals, close_targets):
 
     side      = "long" if long_sig else "short"
     risk_dist = ATR_STOP_MULT * atr[i]
+
+    # Volume: risk 5% of ₹50K capital per trade
+    # cTrader volume units: 100 = 1 standard lot (100,000 base units)
+    risk_usd = DEMO_CAPITAL_USD * RISK_PER_TRADE
+    lots     = risk_usd / (100_000 * risk_dist) if risk_dist > 0 else 0
+    volume   = max(1, min(100, round(lots * 100)))  # capped at 1 lot for safety
+
     entry_signals[name] = {
-        "side":  side,
-        "entry": close,
-        "stop":  close - risk_dist if side == "long" else close + risk_dist,
-        "risk":  risk_dist,
-        "tp":    bb_mid[i],
+        "side":   side,
+        "entry":  close,
+        "stop":   close - risk_dist if side == "long" else close + risk_dist,
+        "risk":   risk_dist,
+        "tp":     bb_mid[i],
+        "volume": volume,
     }
 
 

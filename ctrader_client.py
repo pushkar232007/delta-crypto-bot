@@ -13,7 +13,7 @@ import urllib.parse
 
 ENV_PATH  = os.path.join(os.path.dirname(__file__), ".env")
 TOKEN_URL = "https://connect.spotware.com/apps/token"
-DEMO_VOLUME = 10  # 0.1 lot — replace with proper sizing before going live
+DEMO_VOLUME = 10  # fallback only — volume is calculated dynamically in forex_trader.py
 
 
 def _get_access_token(client_id, client_secret):
@@ -227,7 +227,7 @@ class CTraderBot:
             req.symbolId  = sym_id
             req.orderType = 1  # MARKET
             req.tradeSide = 1 if sig["side"] == "long" else 2   # BUY / SELL
-            req.volume    = DEMO_VOLUME
+            req.volume    = sig.get("volume", DEMO_VOLUME)
             req.stopLoss  = sig["stop"]
             client.send(req)
             self.state[pair] = {
