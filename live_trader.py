@@ -27,9 +27,9 @@ from strategy_pullback import build_pullback_signal, TP_MULT
 STATE_PATH = os.path.join(os.path.dirname(__file__), "state.json")
 
 # Not on testnet — simulated locally; switch to real orders automatically when going live
-SIM_SYMBOLS = ["AAVEUSD", "TRXUSD", "DYDXUSD", "ENJUSD"]
+SIM_SYMBOLS = ["ADAUSD", "AAVEUSD", "TRXUSD", "DYDXUSD", "ENJUSD"]
 
-SYMBOLS = ["XRPUSD", "ADAUSD", "DOGEUSD", "AAVEUSD", "TRXUSD", "DYDXUSD", "ENJUSD"]
+SYMBOLS = ["XRPUSD", "DOGEUSD", "ADAUSD", "AAVEUSD", "TRXUSD", "DYDXUSD", "ENJUSD"]
 
 RESOLUTION     = "1h"
 CANDLE_HISTORY = 400
