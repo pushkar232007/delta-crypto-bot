@@ -207,6 +207,8 @@ def handle_pair(pair, state, entry_signals, close_targets):
 
 
 def run_once():
+    import datetime as _dt
+    print(f"[{_dt.datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC] forex_ic_markets running")
     env   = _load_env()
     state = load_state()
 
