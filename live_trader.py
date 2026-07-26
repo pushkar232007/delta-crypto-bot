@@ -40,11 +40,15 @@ RISK_PER_TRADE = 0.05
 LEVERAGE       = 7
 
 
+SIM_STARTING_EQUITY = 1000.0  # independent equity for AAVE/TRX sim
+
 def load_state():
     if os.path.exists(STATE_PATH):
-        with open(STATE_PATH) as f:
-            return json.load(f)
-    return {"positions": {}}
+        state = json.load(open(STATE_PATH))
+        if "sim_equity" not in state:
+            state["sim_equity"] = SIM_STARTING_EQUITY
+        return state
+    return {"positions": {}, "sim_equity": SIM_STARTING_EQUITY}
 
 
 def save_state(state):
@@ -113,7 +117,7 @@ def run_once():
     for symbol in SYMBOLS:
         try:
             if symbol in SIM_SYMBOLS:
-                handle_sim_symbol(state, symbol, equity, allow_entry)
+                handle_sim_symbol(state, symbol, allow_entry)
             else:
                 handle_symbol(client, state, symbol, equity, allow_entry)
         except Exception as e:
@@ -124,7 +128,7 @@ def run_once():
 
 # ── Simulated symbols (AAVE, TRX — not on testnet) ───────────────────────────
 
-def handle_sim_symbol(state, symbol, equity, allow_entry):
+def handle_sim_symbol(state, symbol, allow_entry):
     candles = fetch_recent_candles(symbol, RESOLUTION, CANDLE_HISTORY)
     if len(candles) < 50:
         return
@@ -149,7 +153,8 @@ def handle_sim_symbol(state, symbol, equity, allow_entry):
     if sl_dist <= 0:
         return
 
-    equity_risked = equity * RISK_PER_TRADE
+    sim_equity    = state["sim_equity"]
+    equity_risked = sim_equity * RISK_PER_TRADE
     tp_price = entry_price + TP_MULT * sl_dist if signal == "long" else entry_price - TP_MULT * sl_dist
 
     state["positions"][symbol] = {
@@ -164,7 +169,7 @@ def handle_sim_symbol(state, symbol, equity, allow_entry):
     notify(
         f"ENTRY {symbol} {signal.upper()} (sim) @ {entry_price:.5g} | "
         f"TP {_round_price(tp_price)} (2R) | SL {_round_price(sl_price)} (swing) | "
-        f"risk ${equity_risked:.2f}"
+        f"risk ${equity_risked:.2f} | sim equity ${sim_equity:.2f}"
     )
 
 
@@ -186,23 +191,27 @@ def manage_sim_position(state, symbol, candles, pos_state):
         if side == "long":
             if lo <= sl_price:
                 pnl = -eq_risked
-                notify(f"{symbol} (sim) LOSS: SL hit @ {sl_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (-1.00R)")
+                state["sim_equity"] += pnl
+                notify(f"{symbol} (sim) LOSS: SL hit @ {sl_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (-1.00R) | sim equity ${state['sim_equity']:.2f}")
                 del state["positions"][symbol]
                 return
             if hi >= tp_price:
                 pnl = eq_risked * TP_MULT
-                notify(f"{symbol} (sim) WIN: TP hit @ {tp_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (+{TP_MULT:.2f}R)")
+                state["sim_equity"] += pnl
+                notify(f"{symbol} (sim) WIN: TP hit @ {tp_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (+{TP_MULT:.2f}R) | sim equity ${state['sim_equity']:.2f}")
                 del state["positions"][symbol]
                 return
         else:
             if hi >= sl_price:
                 pnl = -eq_risked
-                notify(f"{symbol} (sim) LOSS: SL hit @ {sl_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (-1.00R)")
+                state["sim_equity"] += pnl
+                notify(f"{symbol} (sim) LOSS: SL hit @ {sl_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (-1.00R) | sim equity ${state['sim_equity']:.2f}")
                 del state["positions"][symbol]
                 return
             if lo <= tp_price:
                 pnl = eq_risked * TP_MULT
-                notify(f"{symbol} (sim) WIN: TP hit @ {tp_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (+{TP_MULT:.2f}R)")
+                state["sim_equity"] += pnl
+                notify(f"{symbol} (sim) WIN: TP hit @ {tp_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (+{TP_MULT:.2f}R) | sim equity ${state['sim_equity']:.2f}")
                 del state["positions"][symbol]
                 return
 
