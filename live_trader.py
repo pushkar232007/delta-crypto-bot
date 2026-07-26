@@ -40,7 +40,7 @@ RISK_PER_TRADE = 0.05
 LEVERAGE       = 7
 
 
-SIM_STARTING_EQUITY = 1000.0  # independent equity for AAVE/TRX sim
+SIM_STARTING_EQUITY = 178.0  # independent equity for AAVE/TRX sim (~₹15K at 84 INR/USD)
 
 def load_state():
     if os.path.exists(STATE_PATH):
