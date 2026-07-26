@@ -189,8 +189,7 @@ def manage_sim_position(state, symbol, candles, pos_state):
             if lo <= sl_price:
                 pnl = -eq_risked
                 state["sim_equity"] += pnl
-                state.setdefault("no_entry", {})[symbol] = True
-                notify(f"{symbol} (sim) LOSS: SL hit @ {sl_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (-1.00R) | sim equity ${state['sim_equity']:.2f} | re-entry blocked today")
+                notify(f"{symbol} (sim) LOSS: SL hit @ {sl_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (-1.00R) | sim equity ${state['sim_equity']:.2f}")
                 del state["positions"][symbol]
                 return
             if hi >= tp_price:
@@ -203,8 +202,7 @@ def manage_sim_position(state, symbol, candles, pos_state):
             if hi >= sl_price:
                 pnl = -eq_risked
                 state["sim_equity"] += pnl
-                state.setdefault("no_entry", {})[symbol] = True
-                notify(f"{symbol} (sim) LOSS: SL hit @ {sl_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (-1.00R) | sim equity ${state['sim_equity']:.2f} | re-entry blocked today")
+                notify(f"{symbol} (sim) LOSS: SL hit @ {sl_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (-1.00R) | sim equity ${state['sim_equity']:.2f}")
                 del state["positions"][symbol]
                 return
             if lo <= tp_price:
@@ -369,10 +367,10 @@ def manage_position(client, state, symbol, product_id, pos_state, candles):
 
             if pnl < 0:
                 is_sl = (exit_price <= sl_price) if side == "long" else (exit_price >= sl_price)
-                state.setdefault("no_entry", {})[symbol] = True
                 if is_sl:
-                    notify(f"{symbol} LOSS: SL hit @ {exit_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} ({r_mult:+.2f}R) | re-entry blocked today")
+                    notify(f"{symbol} LOSS: SL hit @ {exit_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} ({r_mult:+.2f}R)")
                 else:
+                    state.setdefault("no_entry", {})[symbol] = True
                     notify(f"{symbol} CLOSED: manual @ {exit_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} ({r_mult:+.2f}R) | re-entry blocked today")
             else:
                 at_tp = (exit_price >= tp_price) if side == "long" else (exit_price <= tp_price)
