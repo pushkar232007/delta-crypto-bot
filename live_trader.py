@@ -343,14 +343,17 @@ def manage_position(client, state, symbol, product_id, pos_state, candles):
     if live_size == 0:
         client.cancel_all_orders(product_id)
 
-        # Get actual exit price from fills API
+        # Get actual exit price from fills API with sanity check
         exit_price = None
         try:
             fills = client.get_fills(product_id, page_size=20, start_time=entry_time)
             exit_fill_side = "sell" if side == "long" else "buy"
             for f in fills:
                 if f.get("side") == exit_fill_side:
-                    exit_price = float(f["price"])
+                    candidate = float(f["price"])
+                    # Sanity: exit price must be within 20% of entry (testnet returns garbage prices)
+                    if abs(candidate - entry_px) / entry_px <= 0.20:
+                        exit_price = candidate
                     break
         except Exception:
             pass
@@ -374,17 +377,19 @@ def manage_position(client, state, symbol, product_id, pos_state, candles):
                     state.setdefault("no_entry", {})[symbol] = True
                     notify(f"{symbol} CLOSED: manual @ {exit_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (+{r_mult:.2f}R) | re-entry blocked today")
         else:
-            # Fallback: fills unavailable, use candle heuristic
-            last_close = float(candles[-2]["close"]) if len(candles) >= 2 else None
-            if last_close is not None:
-                if side == "long":
-                    tag, pnl = ("WIN", eq_risked * TP_MULT) if last_close >= tp_price else ("LOSS", -eq_risked)
+            # Fallback: use SL price for losses, TP price for wins (candle heuristic)
+            last_close = float(candles[-2]["close"]) if len(candles) >= 2 else entry_px
+            if side == "long":
+                if last_close >= tp_price:
+                    pnl, tag, r_mult = eq_risked * TP_MULT, "WIN", TP_MULT
                 else:
-                    tag, pnl = ("WIN", eq_risked * TP_MULT) if last_close <= tp_price else ("LOSS", -eq_risked)
-                r_mult = TP_MULT if tag == "WIN" else -1.0
-                notify(f"{symbol} {tag}: Entry {entry_px:.5g} | PnL ${pnl:+.2f} ({r_mult:+.2f}R) [estimated]")
+                    pnl, tag, r_mult = -eq_risked, "LOSS", -1.0
             else:
-                notify(f"{symbol}: position closed | Entry {entry_px:.5g}")
+                if last_close <= tp_price:
+                    pnl, tag, r_mult = eq_risked * TP_MULT, "WIN", TP_MULT
+                else:
+                    pnl, tag, r_mult = -eq_risked, "LOSS", -1.0
+            notify(f"{symbol} {tag}: Entry {entry_px:.5g} | PnL ${pnl:+.2f} ({r_mult:+.2f}R) [estimated]")
 
         del state["positions"][symbol]
         return
