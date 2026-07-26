@@ -6,16 +6,13 @@ Cron: every 5 minutes.
   (fresh 1h candle just closed), preventing duplicate entries.
 
 Strategy routing:
-  BTCUSD              → RSI(30/70) mean-reversion with EMA200 trend filter
-  ETHUSD              → EMA(20/50) pullback
-  XRPUSD, DOGEUSD,
-  ADAUSD, AAVEUSD,
-  TRXUSD              → EMA(9/20) pullback
+  All pairs → EMA pullback (RSI bounce at EMA200)
 
 Execution:
   TESTNET_SYMBOLS  → orders placed on Delta testnet
   SIM_SYMBOLS      → simulated locally (not on testnet); same signals,
                      same Telegram notifications, P&L tracked in state.json
+  Going live: change DELTA_BASE_URL in .env to production — all pairs auto-switch
 
 State persists in state.json between invocations.
 """
@@ -25,14 +22,14 @@ import time
 import urllib.request
 
 from delta_client import DeltaClient, _load_env
-from strategy_pullback import build_pullback_signal, build_btc_rsi_signal, TP_MULT
+from strategy_pullback import build_pullback_signal, TP_MULT
 
 STATE_PATH = os.path.join(os.path.dirname(__file__), "state.json")
 
-# Symbols not available on testnet — simulated locally using live candle prices
-SIM_SYMBOLS = ["AAVEUSD", "TRXUSD"]
+# Not on testnet — simulated locally; switch to real orders automatically when going live
+SIM_SYMBOLS = ["AAVEUSD", "TRXUSD", "DYDXUSD", "ENJUSD"]
 
-SYMBOLS = ["BTCUSD", "ETHUSD", "XRPUSD", "DOGEUSD", "ADAUSD", "AAVEUSD", "TRXUSD"]
+SYMBOLS = ["XRPUSD", "ADAUSD", "DOGEUSD", "AAVEUSD", "TRXUSD", "DYDXUSD", "ENJUSD"]
 
 RESOLUTION     = "1h"
 CANDLE_HISTORY = 400
@@ -240,10 +237,7 @@ def handle_symbol(client, state, symbol, equity, allow_entry):
     if not allow_entry:
         return
 
-    if symbol == "BTCUSD":
-        result = build_btc_rsi_signal(candles)
-    else:
-        result = build_pullback_signal(candles, symbol)
+    result = build_pullback_signal(candles, symbol)
 
     if result is None:
         return
