@@ -1,27 +1,23 @@
 """EMA Pullback strategy + BTC RSI mean-reversion strategy.
 
-EMA Pullback (XRPUSD, DOGEUSD, ADAUSD, AAVEUSD, TRXUSD, ETHUSD):
+EMA Pullback — all pairs:
   - Uptrend:   EMA_fast > EMA_slow, price pulls back to touch EMA zone, bounces
   - Downtrend: EMA_fast < EMA_slow, price pulls back up to EMA zone, rejects
   - SL: lowest swing low (long) / highest swing high (short) of last SWING_LOOKBACK candles
   - TP: 2R from SL distance
-
-BTC RSI (BTCUSD):
-  - Long:  price above EMA200, RSI crosses back above 30 (oversold bounce)
-  - Short: price below EMA200, RSI crosses back below 70 (overbought rejection)
-  - SL: lowest/highest of last 8 candles
 
 No external dependencies — pure Python only.
 Evaluates signal on candles[-2] (last closed candle); candles[-1] is the forming candle.
 """
 
 PULLBACK_PARAMS = {
-    "XRPUSD":  {"fast": 9,  "slow": 20},
-    "DOGEUSD": {"fast": 9,  "slow": 20},
-    "ADAUSD":  {"fast": 9,  "slow": 20},
-    "AAVEUSD": {"fast": 9,  "slow": 20},
-    "TRXUSD":  {"fast": 9,  "slow": 20},
-    "ETHUSD":  {"fast": 20, "slow": 50},
+    "XRPUSD":  {"fast": 9, "slow": 20},
+    "DOGEUSD": {"fast": 9, "slow": 20},
+    "ADAUSD":  {"fast": 9, "slow": 20},
+    "AAVEUSD": {"fast": 9, "slow": 20},
+    "TRXUSD":  {"fast": 9, "slow": 20},
+    "DYDXUSD": {"fast": 9, "slow": 20},
+    "ENJUSD":  {"fast": 9, "slow": 20},
 }
 
 TP_MULT        = 2.0
