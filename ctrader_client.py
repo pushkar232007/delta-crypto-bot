@@ -16,9 +16,10 @@ TOKEN_URL = "https://connect.spotware.com/apps/token"
 DEMO_VOLUME = 10  # fallback only — volume is calculated dynamically in forex_trader.py
 
 
-def _get_access_token(client_id, client_secret):
+def _get_access_token(client_id, client_secret, refresh_token):
     data = urllib.parse.urlencode({
-        "grant_type":    "client_credentials",
+        "grant_type":    "refresh_token",
+        "refresh_token": refresh_token,
         "client_id":     client_id,
         "client_secret": client_secret,
     }).encode()
@@ -44,10 +45,11 @@ class CTraderBot:
         bot.notifications  — list of Telegram message strings to send
     """
 
-    def __init__(self, client_id, client_secret, account_id, demo=True):
+    def __init__(self, client_id, client_secret, account_id, refresh_token, demo=True):
         self.client_id     = str(client_id)
         self.client_secret = str(client_secret)
         self.account_id    = int(account_id)
+        self.refresh_token = str(refresh_token)
         self.demo          = demo
 
         self.state         = {}
@@ -66,7 +68,7 @@ class CTraderBot:
         from twisted.internet import reactor
         from ctrader_open_api import Client, TcpProtocol, EndPoints
 
-        self._access_token = _get_access_token(self.client_id, self.client_secret)
+        self._access_token = _get_access_token(self.client_id, self.client_secret, self.refresh_token)
         host = (EndPoints.PROTOBUF_DEMO_HOST if self.demo
                 else EndPoints.PROTOBUF_LIVE_HOST)
         self._client = Client(host, EndPoints.PROTOBUF_PORT, TcpProtocol)

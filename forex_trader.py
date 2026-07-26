@@ -342,6 +342,7 @@ def run_once():
                 client_id=env["CTRADER_CLIENT_ID"],
                 client_secret=env["CTRADER_CLIENT_SECRET"],
                 account_id=int(env["CTRADER_ACCOUNT_ID"]),
+                refresh_token=env["CTRADER_REFRESH_TOKEN"],
                 demo=env.get("CTRADER_DEMO", "true").lower() == "true",
             )
             bot.state         = ctrader_positions
