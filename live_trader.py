@@ -189,7 +189,8 @@ def manage_sim_position(state, symbol, candles, pos_state):
             if lo <= sl_price:
                 pnl = -eq_risked
                 state["sim_equity"] += pnl
-                notify(f"{symbol} (sim) LOSS: SL hit @ {sl_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (-1.00R) | sim equity ${state['sim_equity']:.2f}")
+                state.setdefault("no_entry", {})[symbol] = True
+                notify(f"{symbol} (sim) LOSS: SL hit @ {sl_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (-1.00R) | sim equity ${state['sim_equity']:.2f} | re-entry blocked today")
                 del state["positions"][symbol]
                 return
             if hi >= tp_price:
@@ -202,7 +203,8 @@ def manage_sim_position(state, symbol, candles, pos_state):
             if hi >= sl_price:
                 pnl = -eq_risked
                 state["sim_equity"] += pnl
-                notify(f"{symbol} (sim) LOSS: SL hit @ {sl_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (-1.00R) | sim equity ${state['sim_equity']:.2f}")
+                state.setdefault("no_entry", {})[symbol] = True
+                notify(f"{symbol} (sim) LOSS: SL hit @ {sl_price:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} (-1.00R) | sim equity ${state['sim_equity']:.2f} | re-entry blocked today")
                 del state["positions"][symbol]
                 return
             if lo <= tp_price:
