@@ -29,7 +29,23 @@ def _get_access_token(client_id, client_secret, refresh_token):
     )
     with urllib.request.urlopen(req, timeout=15) as resp:
         body = json.loads(resp.read())
-    return body.get("accessToken") or body.get("access_token")
+
+    access_token = body.get("accessToken") or body.get("access_token")
+    if not access_token:
+        raise RuntimeError(f"cTrader token exchange failed: {body}")
+
+    # Spotware rotates refresh tokens on each use — persist the new one immediately
+    new_refresh = body.get("refreshToken") or body.get("refresh_token")
+    if new_refresh and new_refresh != refresh_token and os.path.exists(ENV_PATH):
+        with open(ENV_PATH) as f:
+            content = f.read()
+        import re
+        content = re.sub(r"(?m)^CTRADER_REFRESH_TOKEN=.*$",
+                         f"CTRADER_REFRESH_TOKEN={new_refresh}", content)
+        with open(ENV_PATH, "w") as f:
+            f.write(content)
+
+    return access_token
 
 
 class CTraderBot:
