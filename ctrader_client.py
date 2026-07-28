@@ -17,6 +17,19 @@ DEMO_VOLUME = 10  # fallback only — volume is calculated dynamically in forex_
 
 
 def _get_access_token(client_id, client_secret, refresh_token):
+    import re, time
+
+    # Return cached access token if it still has >1 day left
+    if os.path.exists(ENV_PATH):
+        with open(ENV_PATH) as f:
+            content = f.read()
+        env = dict(line.split("=", 1) for line in content.splitlines()
+                   if "=" in line and not line.startswith("#"))
+        cached  = env.get("CTRADER_ACCESS_TOKEN", "").strip()
+        expiry  = int(env.get("CTRADER_ACCESS_TOKEN_EXPIRY", "0").strip())
+        if cached and expiry - int(time.time()) > 86400:
+            return cached
+
     data = urllib.parse.urlencode({
         "grant_type":    "refresh_token",
         "refresh_token": refresh_token,
@@ -34,14 +47,22 @@ def _get_access_token(client_id, client_secret, refresh_token):
     if not access_token:
         raise RuntimeError(f"cTrader token exchange failed: {body}")
 
-    # Spotware rotates refresh tokens on each use — persist the new one immediately
-    new_refresh = body.get("refreshToken") or body.get("refresh_token")
-    if new_refresh and new_refresh != refresh_token and os.path.exists(ENV_PATH):
+    if os.path.exists(ENV_PATH):
         with open(ENV_PATH) as f:
             content = f.read()
-        import re
-        content = re.sub(r"(?m)^CTRADER_REFRESH_TOKEN=.*$",
-                         f"CTRADER_REFRESH_TOKEN={new_refresh}", content)
+        expires_in = int(body.get("expiresIn", body.get("expires_in", 2628000)))
+        expiry_ts  = int(time.time()) + expires_in
+        # Save access token + expiry; rotate refresh token if returned
+        new_refresh = body.get("refreshToken") or body.get("refresh_token")
+        if new_refresh and new_refresh != refresh_token:
+            content = re.sub(r"(?m)^CTRADER_REFRESH_TOKEN=.*$",
+                             f"CTRADER_REFRESH_TOKEN={new_refresh}", content)
+        for key, val in [("CTRADER_ACCESS_TOKEN", access_token),
+                         ("CTRADER_ACCESS_TOKEN_EXPIRY", str(expiry_ts))]:
+            if re.search(rf"(?m)^{key}=", content):
+                content = re.sub(rf"(?m)^{key}=.*$", f"{key}={val}", content)
+            else:
+                content = content.rstrip("\n") + f"\n{key}={val}\n"
         with open(ENV_PATH, "w") as f:
             f.write(content)
 
