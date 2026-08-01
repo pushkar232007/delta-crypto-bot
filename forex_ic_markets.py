@@ -25,7 +25,7 @@ TIME_STOP_R         = 0.3
 CANDLE_FETCH_DAYS   = 60
 DEMO_CAPITAL_USD    = 595   # ₹50K at ~84 INR/USD
 
-IC_ACCOUNT_ID = 10089493
+IC_ACCOUNT_ID = 48026825  # ctidTraderAccountId (NOT broker login 10089493)
 IC_PAIRS      = ["USDZAR=X", "USDTRY=X"]
 
 STATE_PATH = os.path.join(os.path.dirname(__file__), "forex_ic_state.json")
