@@ -23,7 +23,7 @@ ATR_PERIOD          = 14
 TIME_STOP_CANDLES   = 24
 TIME_STOP_R         = 0.3
 CANDLE_FETCH_DAYS   = 60
-DEMO_CAPITAL_USD    = 595   # ₹50K at ~84 INR/USD
+DEMO_CAPITAL_USD    = 10_000  # EUR 10K demo account; update when going live
 
 IC_ACCOUNT_ID = 48026825  # ctidTraderAccountId (NOT broker login 10089493)
 IC_PAIRS      = ["USDZAR=X", "USDTRY=X"]
@@ -192,9 +192,10 @@ def handle_pair(pair, state, entry_signals, close_targets):
     side      = "long" if long_sig else "short"
     risk_dist = ATR_STOP_MULT * atr[i]
 
+    # cTrader Python API: volume in base currency units; 1 standard lot = 100,000 units
     risk_usd = DEMO_CAPITAL_USD * RISK_PER_TRADE
     lots     = risk_usd / (100_000 * risk_dist) if risk_dist > 0 else 0
-    volume   = max(1, min(100, round(lots * 100)))
+    volume   = max(100_000, min(10_000_000, round(lots * 100_000)))  # min 0.01 lot, max 100 lots
 
     entry_signals[name] = {
         "side":   side,
