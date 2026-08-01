@@ -144,7 +144,8 @@ class CTraderBot:
         from ctrader_open_api.messages.OpenApiMessages_pb2 import (
             ProtoOAApplicationAuthRes, ProtoOAAccountAuthRes,
             ProtoOASymbolsListRes,    ProtoOAReconcileRes,
-            ProtoOAExecutionEvent,    ProtoOAErrorRes,
+            ProtoOAExecutionEvent,    ProtoOAOrderErrorEvent,
+            ProtoOAErrorRes,
         )
         pt = message.payloadType
 
@@ -186,6 +187,12 @@ class CTraderBot:
 
         elif pt == ProtoOAExecutionEvent().payloadType:
             self._run_next(client)
+
+        elif pt == ProtoOAOrderErrorEvent().payloadType:
+            res = ProtoOAOrderErrorEvent()
+            res.ParseFromString(message.payload)
+            self._error = f"order rejected: {res.errorCode}"
+            self._stop()
 
         elif pt == ProtoOAErrorRes().payloadType:
             res = ProtoOAErrorRes()
