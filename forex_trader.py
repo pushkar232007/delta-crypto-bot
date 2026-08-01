@@ -317,7 +317,7 @@ def handle_sim_pair(pair, state):
 
 def run_once():
     import datetime as _dt
-    print(f"[{_dt.datetime.now(_dt.timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC] forex_trader running")
+    print(f"[{_dt.datetime.now(_dt.timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC] forex_trader running", flush=True)
     env   = _load_env()
     state = load_state()
 
