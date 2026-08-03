@@ -26,7 +26,7 @@ CANDLE_FETCH_DAYS   = 60
 DEMO_CAPITAL_USD    = 10_000  # EUR 10K demo account; update when going live
 
 IC_ACCOUNT_ID = 48026825  # ctidTraderAccountId (NOT broker login 10089493)
-IC_PAIRS      = ["USDZAR=X", "USDTRY=X"]
+IC_PAIRS      = ["USDZAR=X"]
 
 STATE_PATH = os.path.join(os.path.dirname(__file__), "forex_ic_state.json")
 ENV_PATH   = os.path.join(os.path.dirname(__file__), ".env")
