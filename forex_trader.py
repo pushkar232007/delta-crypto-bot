@@ -37,7 +37,7 @@ TIME_STOP_R         = 0.3
 CANDLE_FETCH_DAYS   = 60
 SIM_STARTING_EQUITY = 50000.0
 
-CTRADER_PAIRS = ["GBPUSD=X", "AUDUSD=X", "USDCAD=X", "USDNOK=X", "EURCAD=X"]
+CTRADER_PAIRS = ["GBPUSD=X", "AUDUSD=X", "USDCAD=X", "USDNOK=X", "EURCAD=X", "USDZAR=X", "USDTRY=X"]
 SIM_PAIRS     = ["USDINR=X"]  # USDZAR/USDTRY moved to forex_ic_markets.py (IC Markets demo)
 
 STATE_PATH = os.path.join(os.path.dirname(__file__), "forex_state.json")
