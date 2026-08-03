@@ -123,8 +123,10 @@ class CTraderBot:
             self._client.stopService()
         except Exception:
             pass
-        if reactor.running:
+        try:
             reactor.stop()
+        except Exception:
+            pass
 
     # ── Twisted callbacks ────────────────────────────────────────────────────
 
@@ -137,8 +139,10 @@ class CTraderBot:
 
     def _on_disconnected(self, client, reason=None):
         from twisted.internet import reactor
-        if reactor.running:
+        try:
             reactor.stop()
+        except Exception:
+            pass
 
     def _on_message(self, client, message):
         from ctrader_open_api.messages.OpenApiMessages_pb2 import (
