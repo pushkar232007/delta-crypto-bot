@@ -85,8 +85,10 @@ def load_state():
 
 
 def save_state(state):
-    with open(STATE_PATH, "w") as f:
+    tmp = STATE_PATH + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(state, f, indent=2)
+    os.replace(tmp, STATE_PATH)
 
 
 def fetch_candles(pair):
