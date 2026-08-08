@@ -49,8 +49,10 @@ def load_state():
 
 
 def save_state(state):
-    with open(STATE_PATH, "w") as f:
+    tmp = STATE_PATH + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(state, f, indent=2)
+    os.replace(tmp, STATE_PATH)
 
 
 def notify(msg):
@@ -305,6 +307,17 @@ def handle_symbol(client, state, symbol, equity, allow_entry):
         raise
     # TP managed via market close on each bot run (Delta limit orders unreliable on testnet)
 
+    try:
+        tp_order = client.place_order(
+            product_id, side=close_side, size=lots,
+            order_type="limit_order",
+            limit_price=_round_price(tp_price),
+            reduce_only=True,
+        )
+        tp_order_id = tp_order["id"] if tp_order else None
+    except Exception:
+        tp_order_id = None
+
     state["positions"][symbol] = {
         "strategy": "pullback",
         "side": signal,
@@ -317,6 +330,7 @@ def handle_symbol(client, state, symbol, equity, allow_entry):
         "contract_value": contract_value,
         "entry_time": candles[-2]["time"],
         "sl_order_id": sl_order["id"],
+        "tp_order_id": tp_order_id,
     }
     notify(
         f"ENTRY {symbol} {signal.upper()} {lots} lots @ {fill_price:.5g} | "
@@ -406,7 +420,16 @@ def manage_position(client, state, symbol, product_id, pos_state, candles):
 
         if side == "long":
             if lo <= sl_price:
-                break  # SL zone — let exchange stop order handle it
+                order = client.place_order(product_id, side=close_side, size=live_size,
+                                           order_type="market_order", reduce_only=True)
+                client.cancel_all_orders(product_id)
+                fill_px_raw = order.get("average_fill_price")
+                fill_px = float(fill_px_raw) if fill_px_raw else sl_price
+                pnl = (fill_px - entry_px) * lots * cv if lots and cv else -eq_risked
+                r_mult = pnl / eq_risked if eq_risked else -1.0
+                notify(f"{symbol} LOSS: SL hit @ {fill_px:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} ({r_mult:+.2f}R)")
+                del state["positions"][symbol]
+                return
             if hi >= tp_price:
                 order = client.place_order(product_id, side=close_side, size=live_size,
                                            order_type="market_order", reduce_only=True)
@@ -429,7 +452,16 @@ def manage_position(client, state, symbol, product_id, pos_state, candles):
                 return
         else:
             if hi >= sl_price:
-                break  # SL zone
+                order = client.place_order(product_id, side=close_side, size=live_size,
+                                           order_type="market_order", reduce_only=True)
+                client.cancel_all_orders(product_id)
+                fill_px_raw = order.get("average_fill_price")
+                fill_px = float(fill_px_raw) if fill_px_raw else sl_price
+                pnl = (entry_px - fill_px) * lots * cv if lots and cv else -eq_risked
+                r_mult = pnl / eq_risked if eq_risked else -1.0
+                notify(f"{symbol} LOSS: SL hit @ {fill_px:.5g} | Entry {entry_px:.5g} | PnL ${pnl:+.2f} ({r_mult:+.2f}R)")
+                del state["positions"][symbol]
+                return
             if lo <= tp_price:
                 order = client.place_order(product_id, side=close_side, size=live_size,
                                            order_type="market_order", reduce_only=True)
