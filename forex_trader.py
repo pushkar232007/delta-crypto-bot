@@ -22,7 +22,7 @@ import urllib.request
 from ctrader_client import CTraderBot
 
 DEMO_CAPITAL_INR    = 50_000          # ₹50K demo capital (update when going live)
-DEMO_CAPITAL_USD    = 10_000          # EUR 10K demo account; update when going live
+DEMO_CAPITAL_USD    = 595          # EUR 10K demo account; update when going live
 RISK_PER_TRADE      = 0.05
 ATR_STOP_MULT       = 2.0
 BB_PERIOD           = 20
