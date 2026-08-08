@@ -29,7 +29,7 @@ STATE_PATH = os.path.join(os.path.dirname(__file__), "state.json")
 # Not on testnet — simulated locally; switch to real orders automatically when going live
 SIM_SYMBOLS = []
 
-SYMBOLS = ["DOGEUSD", "ADAUSD", "AAVEUSD", "TRXUSD", "DYDXUSD", "ENJUSD"]
+SYMBOLS = ["DOGEUSD", "ADAUSD", "AAVEUSD", "TRXUSD", "DYDXUSD", "ENJUSD", "XRPUSD"]
 
 RESOLUTION     = "1h"
 CANDLE_HISTORY = 400
